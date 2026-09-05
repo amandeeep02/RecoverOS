@@ -90,7 +90,7 @@ export function VoiceCallSimulator({ episode, onClose }: VoiceCallSimulatorProps
             <div className="avatar">🤖</div>
             <div>
               <strong>RecoverOS Voice Agent</strong>
-              <small>Calling {episode.event.customerId} · {formatInr(episode.event.amountInr)}</small>
+              <small>Calling {episode.event.customerId} · {formatInr(episode.event.amountPaise)}</small>
             </div>
           </div>
           <button className="end-call-btn" onClick={endCall}>✕</button>
@@ -159,7 +159,7 @@ export function VoiceCallSimulator({ episode, onClose }: VoiceCallSimulatorProps
 
 function generateHinglishScript(episode: RecoveryEpisode): string {
   const { event, profile } = episode;
-  const amount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(event.amountInr);
+  const amount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(event.amountPaise / 100);
   const method = event.paymentMethod === "upi" ? "UPI" : event.paymentMethod === "card" ? "card" : "payment";
   const name = profile.customerId.slice(-4);
 

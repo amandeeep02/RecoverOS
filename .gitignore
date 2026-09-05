@@ -5,3 +5,4 @@ coverage
 .env
 .env.local
 data/generated
+tsconfig.tsbuildinfo

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { store } from "@/lib/store";
 
-export function GET() {
-  return NextResponse.json({ episodes: store.listEpisodes() });
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  return NextResponse.json({ episodes: await store.listEpisodes() });
 }

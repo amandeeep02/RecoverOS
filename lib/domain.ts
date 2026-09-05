@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { rupees, scale, assertPaise, type Paise } from "./money";
+
+export { rupees, scale, assertPaise, type Paise } from "./money";
 
 export const paymentMethodSchema = z.enum(["card", "upi", "netbanking", "wallet", "unknown"]);
 export const failureSourceSchema = z.enum(["bank", "gateway", "customer", "mandate", "network", "unknown"]);
@@ -12,7 +15,7 @@ export const failureClassSchema = z.enum([
   "network_gateway_failure",
   "unknown",
 ]);
-export const actionSchema = z.enum(["WAIT", "PAYMENT_LINK", "REMINDER", "ESCALATE", "STOP", "RETRY", "VOICE_CALL"]);
+export const actionSchema = z.enum(["WAIT", "PAYMENT_LINK", "REMINDER", "ESCALATE", "STOP", "RETRY", "VOICE_CALL", "HELD_OUT", "HELD_DEGRADED"]);
 export const nativeRecoveryStateSchema = z.enum(["ACTIVE", "EXHAUSTED", "NOT_ELIGIBLE", "UNKNOWN"]);
 export const certaintySchema = z.enum(["known", "inferred", "unknown"]);
 export const policyOutcomeSchema = z.enum(["APPROVE", "REJECT", "ESCALATE"]);
@@ -30,6 +33,9 @@ export const episodeStatusSchema = z.enum([
   "ESCALATED",
   "STOPPED",
   "PROMISED",
+  "HELD_OUT",
+  "HELD_DEGRADED",
+  "SUPPRESSED",
 ]);
 
 export const paymentEventSchema = z.object({
@@ -40,12 +46,13 @@ export const paymentEventSchema = z.object({
   customerId: z.string().min(1),
   paymentId: z.string().min(1),
   subscriptionId: z.string().nullable(),
-  amountInr: z.number().int().positive(),
+  amountPaise: z.number().int().positive(),
   currency: z.literal("INR"),
   paymentMethod: paymentMethodSchema,
   failureCode: z.string().nullable(),
   failureSource: failureSourceSchema,
   nativeRecoveryState: nativeRecoveryStateSchema,
+  customerPhone: z.string().nullable().default(null),
   railMetadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type PaymentEvent = z.infer<typeof paymentEventSchema>;
@@ -54,10 +61,14 @@ export const customerProfileSchema = z.object({
   customerId: z.string(),
   merchantId: z.string(),
   subscriptionAgeDays: z.number().int().nonnegative(),
-  customerValueInr: z.number().nonnegative(),
+  customerValuePaise: z.number().int().nonnegative(),
   successfulPaymentCount: z.number().int().nonnegative(),
   failedPaymentCount: z.number().int().nonnegative(),
   previousRecoveryRate: z.number().min(0).max(1),
+  /** Prior CONTACT attempts to this customer (reminder / payment link / voice
+   *  call) inside the fatigue window. Silent retries do not count: a customer
+   *  cannot get tired of something they never saw. Read by the contact-fatigue
+   *  term of the EIR churn calculation in `lib/scoring.ts`. */
   previousInterventionCount: z.number().int().nonnegative(),
   previousInterventionSuccessCount: z.number().int().nonnegative(),
   daysSinceLastSuccess: z.number().int().nonnegative(),
@@ -68,6 +79,9 @@ export const customerProfileSchema = z.object({
   optedOut: z.boolean(),
   contactWindowOpen: z.boolean(),
   phone: z.string().nullable(),
+  isSubscription: z.boolean().default(true),
+  daysSinceLastEngagement: z.number().int().nonnegative().optional(),
+  engagementProxy: z.boolean().default(false),
 });
 export type CustomerProfile = z.infer<typeof customerProfileSchema>;
 
@@ -91,10 +105,14 @@ export type RecoveryPrediction = z.infer<typeof recoveryPredictionSchema>;
 
 export const eirScoreSchema = z.object({
   action: actionSchema,
-  amountInr: z.number().positive(),
-  interventionCostInr: z.number().nonnegative(),
+  amountPaise: z.number().int().positive(),
+  interventionCostPaise: z.number().int().nonnegative(),
   incrementalLift: z.number(),
-  eirInr: z.number(),
+  eirPaise: z.number().int(),
+  eirWithoutChurnPaise: z.number().int().default(0),
+  deltaPChurn: z.number().min(0).max(1).default(0),
+  residualLtvPaise: z.number().int().default(0),
+  churnCostPaise: z.number().int().default(0),
 });
 export type EIRScore = z.infer<typeof eirScoreSchema>;
 
@@ -110,7 +128,7 @@ export type ActionProposal = z.infer<typeof actionProposalSchema>;
 
 export const merchantPolicySchema = z.object({
   merchantId: z.string(),
-  minimumEirInr: z.number().nonnegative().default(150),
+  minimumEirPaise: z.number().int().nonnegative().default(rupees(150)),
   maxAutomatedAttempts: z.number().int().min(0).max(10).default(3),
   maxMessagesPerEpisode: z.number().int().min(0).max(10).default(2),
   maxVoiceCallsPerEpisode: z.number().int().min(0).max(5).default(1),
@@ -118,7 +136,37 @@ export const merchantPolicySchema = z.object({
   allowPaymentLinks: z.boolean().default(true),
   allowVoiceCalls: z.boolean().default(true),
   requireConsentForReminder: z.boolean().default(true),
-  highValueEscalationThresholdInr: z.number().nonnegative().default(50000),
+  highValueEscalationThresholdPaise: z.number().int().nonnegative().default(rupees(50000)),
+  /** Below this ticket value a human review cannot pay for itself, so the policy
+   *  stops rather than escalating. A ₹110 review returning ~5pp breaks even near
+   *  ₹2,200; the default leaves margin. Merchant-tunable, not a planted constant. */
+  minimumEscalationValuePaise: z.number().int().nonnegative().default(rupees(2500)),
+  /** Multiplier on the churn term of EIR. 0 disables dormancy suppression
+   *  entirely, 1 trusts the model as written, >1 is more protective. This is the
+   *  knob the recovery frontier is measured along. */
+  churnAversion: z.number().min(0).max(3).default(1),
+  /**
+   * Cancellation hazard added by EACH prior contact to this customer, on top of
+   * the dormancy curve. Reads `CustomerProfile.previousInterventionCount`, which
+   * the churn term interprets as *prior contact attempts* (reminder / payment
+   * link / voice call) inside the ~90-day patience window — not silent retries,
+   * which nobody sees.
+   *
+   * Merchant belief, not a measured constant. Optional so that omitting it leaves
+   * the model's own default in `lib/scoring.ts` in charge; a merchant who has
+   * measured their own nag-driven cancellation sets it here.
+   */
+  contactFatigueChurnPerContact: z.number().min(0).max(0.5).optional(),
+  /** DLT-registered template id for transactional recovery SMS. Absent ⇒ the SMS
+   *  path is refused, which is the correct TRAI behaviour for an unregistered sender. */
+  dltTemplateId: z.string().nullable().default(null),
+  /** DLT-registered sender header (6 chars) that goes with the template above. */
+  dltSenderHeader: z.string().nullable().default(null),
+  /** Razorpay Subscriptions issues the RBI pre-debit notification on the merchant's
+   *  behalf. A merchant on that rail has the obligation met by the platform; one
+   *  running its own mandates does not and must not silently be assumed compliant. */
+  preDebitNotificationByPlatform: z.boolean().default(false),
+  holdoutPct: z.number().min(0).max(100).default(5),
 });
 export type MerchantPolicy = z.infer<typeof merchantPolicySchema>;
 
@@ -134,8 +182,18 @@ export const policyDecisionSchema = z.object({
     consentValid: z.boolean(),
     withinContactWindow: z.boolean(),
     messageBudgetRemaining: z.boolean(),
+    voiceBudgetRemaining: z.boolean(),
+    hasPhone: z.boolean(),
     actionAllowed: z.boolean(),
   }),
+  arm: z.enum(["TREATMENT", "HOLDOUT"]).optional(),
+  holdoutPct: z.number().min(0).max(100).optional(),
+  policyVersionId: z.string().optional(),
+  suppressionReason: z.enum(["DORMANCY_CHURN_RISK", "NEGATIVE_EIR_OTHER"]).nullable().default(null),
+  /** Machine codes from lib/compliance.ts when a regulator, not economics, blocked
+   *  the action. Optional so existing decision construction sites stay valid. */
+  complianceViolations: z.array(z.string()).optional(),
+  degradationWindowId: z.string().nullable().default(null),
 });
 export type PolicyDecision = z.infer<typeof policyDecisionSchema>;
 
@@ -156,7 +214,7 @@ export const outcomeEventSchema = z.object({
   paymentId: z.string(),
   status: z.enum(["PENDING", "RECOVERED", "FAILED", "EXPIRED", "ESCALATED", "STOPPED"]),
   occurredAt: z.string().datetime(),
-  recoveredAmountInr: z.number().nonnegative(),
+  recoveredAmountPaise: z.number().int().nonnegative(),
   source: z.string(),
 });
 export type OutcomeEvent = z.infer<typeof outcomeEventSchema>;
@@ -168,10 +226,20 @@ export const auditEventSchema = z.object({
   customerId: z.string(),
   paymentId: z.string(),
   timestamp: z.string().datetime(),
-  stage: z.enum(["INGESTED", "DIAGNOSED", "SCORED", "PROPOSED", "POLICY", "EXECUTED", "OUTCOME"]),
+  stage: z.enum(["INGESTED", "DIAGNOSED", "SCORED", "PROPOSED", "POLICY", "EXECUTED", "OUTCOME", "EXPERIMENT_ASSIGNED", "DEGRADATION_HELD", "DEGRADATION_RELEASED", "SUPPRESSED", "CUSTOMER_RESPONSE"]),
   payload: z.record(z.string(), z.unknown()),
 });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
+
+export const customerResponseSchema = z.object({
+  responseId: z.string(),
+  channel: z.enum(["voice", "whatsapp"]),
+  text: z.string(),
+  confidence: z.number().min(0).max(1).nullable(),
+  externalRef: z.string().nullable(),
+  receivedAt: z.string().datetime(),
+});
+export type CustomerResponse = z.infer<typeof customerResponseSchema>;
 
 export const recoveryEpisodeSchema = z.object({
   id: z.string(),
@@ -188,30 +256,33 @@ export const recoveryEpisodeSchema = z.object({
   policyDecision: policyDecisionSchema.nullable(),
   execution: executionResultSchema.nullable(),
   outcome: outcomeEventSchema.nullable(),
+  customerResponses: z.array(customerResponseSchema).default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
 export type RecoveryEpisode = z.infer<typeof recoveryEpisodeSchema>;
 
 export const recoveryLedgerSchema = z.object({
-  revenueAtRiskInr: z.number().nonnegative(),
-  nativeRecoveredInr: z.number().nonnegative(),
-  recoverOsRecoveredInr: z.number().nonnegative(),
-  incrementalRecoveredInr: z.number(),
-  interventionCostInr: z.number().nonnegative(),
+  revenueAtRiskPaise: z.number().int().nonnegative(),
+  nativeRecoveredPaise: z.number().int().nonnegative(),
+  recoverOsRecoveredPaise: z.number().int().nonnegative(),
+  incrementalRecoveredPaise: z.number().int(),
+  interventionCostPaise: z.number().int().nonnegative(),
   wastedInterventions: z.number().int().nonnegative(),
   interventions: z.number().int().nonnegative(),
+  protectedPaise: z.number().int().nonnegative().default(0),
+  forgonePaise: z.number().int().nonnegative().default(0),
 });
 export type RecoveryLedger = z.infer<typeof recoveryLedgerSchema>;
 
 export const allowedActions = actionSchema.options;
 
-export function formatInr(amount: number) {
+export function formatInr(paise: number) {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
-  }).format(amount);
+  }).format(paise / 100);
 }
 
 export function clampProbability(value: number) {

@@ -8,17 +8,22 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "verify": "bash scripts/verify.sh",
     "test:watch": "vitest",
-    "benchmark": "tsx scripts/run-benchmark.ts"
+    "eval": "tsx scripts/eval.ts",
+    "eval:sweep": "tsx scripts/sweep.ts",
+    "frontier": "tsx scripts/frontier.ts"
   },
   "dependencies": {
     "next": "15.4.6",
+    "pg": "^8.23.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "tsx": "^4.19.2",

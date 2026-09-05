@@ -1,0 +1,239 @@
+<title>RecoverOS Pilot Case</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F7F8F7; --raise:#FFFFFF; --ink:#14201C; --muted:#5C6B66; --faint:#8A9791;
+  --rule:#DCE3E0; --accent:#0F5F4D; --accent-soft:#E4EFEA; --caution:#A6501E;
+  --caution-soft:#F6EAE1; --good:#0F5F4D; --bad:#A6501E;
+  --serif:"Newsreader",Georgia,serif; --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0E1412; --raise:#161E1B; --ink:#E8EFEC; --muted:#9DACA6; --faint:#6E7D77;
+  --rule:#243029; --accent:#5FD3B2; --accent-soft:#132A24; --caution:#E0925C;
+  --caution-soft:#2A1E15; --good:#5FD3B2; --bad:#E0925C;
+}}
+:root[data-theme="dark"]{
+  --ground:#0E1412; --raise:#161E1B; --ink:#E8EFEC; --muted:#9DACA6; --faint:#6E7D77;
+  --rule:#243029; --accent:#5FD3B2; --accent-soft:#132A24; --caution:#E0925C;
+  --caution-soft:#2A1E15; --good:#5FD3B2; --bad:#E0925C;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6;margin:0}
+.wrap{max-width:940px;margin:0 auto;padding:56px 28px 96px}
+h1,h2,h3{font-family:var(--serif);font-weight:400;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.1rem,4.4vw,3.1rem);line-height:1.1;letter-spacing:-.015em}
+h2{font-size:1.5rem;line-height:1.25;margin-bottom:.5rem}
+h3{font-size:1.08rem;line-height:1.3}
+p{margin:0 0 1rem;max-width:66ch}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 .9rem}
+.lede{font-size:1.12rem;color:var(--muted);max-width:62ch;margin-top:1.1rem}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+header{border-bottom:1px solid var(--rule);padding-bottom:2.4rem;margin-bottom:2.6rem}
+.meta{display:flex;flex-wrap:wrap;gap:1.6rem;margin-top:1.8rem;font-size:.83rem;color:var(--faint)}
+.meta b{display:block;color:var(--ink);font-weight:500;font-family:var(--mono);font-size:.9rem}
+section{margin:0 0 3.4rem}
+.thesis{background:var(--accent-soft);border-left:3px solid var(--accent);padding:1.5rem 1.7rem;margin:0 0 3.4rem}
+.thesis p{font-family:var(--serif);font-size:1.22rem;line-height:1.45;color:var(--ink);margin:0;max-width:60ch}
+.thesis .why{font-family:var(--sans);font-size:.9rem;color:var(--muted);margin-top:.9rem}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+.scroll{overflow-x:auto}
+th{text-align:left;font-weight:500;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:0 .8rem .5rem 0;border-bottom:1px solid var(--rule)}
+td{padding:.62rem .8rem .62rem 0;border-bottom:1px solid var(--rule)}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;padding-right:1.4rem}
+tr.us td{background:var(--accent-soft)}
+tr.us td:first-child{font-weight:600}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+figure{margin:1.6rem 0 0}
+figcaption{font-size:.8rem;color:var(--faint);margin-top:.7rem;max-width:60ch}
+.beat{display:grid;grid-template-columns:78px 1fr;gap:1.4rem;padding:1.3rem 0;border-bottom:1px solid var(--rule);align-items:start}
+.beat:last-child{border-bottom:none}
+.clock{font-family:var(--mono);font-size:.82rem;color:var(--accent);padding-top:.15rem;font-variant-numeric:tabular-nums}
+.beat h3{margin-bottom:.35rem}
+.beat p{font-size:.94rem;margin-bottom:.6rem}
+.retires{font-size:.83rem;color:var(--muted);border-left:2px solid var(--rule);padding-left:.85rem}
+.retires b{color:var(--ink);font-weight:500}
+.cav{counter-reset:c;list-style:none;padding:0;margin:0}
+.cav li{counter-increment:c;position:relative;padding:1rem 0 1rem 3rem;border-bottom:1px solid var(--rule)}
+.cav li:last-child{border-bottom:none}
+.cav li::before{content:counter(c);position:absolute;left:0;top:1rem;font-family:var(--mono);font-size:.78rem;width:1.9rem;height:1.9rem;display:grid;place-items:center;border:1px solid var(--caution);color:var(--caution);border-radius:50%}
+.cav b{display:block;font-weight:600;margin-bottom:.2rem}
+.cav span{font-size:.92rem;color:var(--muted)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1.4rem;margin-top:1.4rem}
+.card{background:var(--raise);border:1px solid var(--rule);padding:1.2rem 1.3rem}
+.card h3{font-family:var(--sans);font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:.6rem}
+.card p{font-size:.92rem;margin:0}
+.kill{border:1px solid var(--caution);background:var(--caution-soft);padding:1.4rem 1.6rem}
+.kill h3{font-family:var(--sans);font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;color:var(--caution);font-weight:600;margin-bottom:.7rem}
+.kill ul{margin:0;padding-left:1.1rem}
+.kill li{margin-bottom:.45rem;font-size:.94rem}
+.qa{margin-top:1.2rem}
+.qa div{padding:.95rem 0;border-bottom:1px solid var(--rule)}
+.qa div:last-child{border-bottom:none}
+.who{font-family:var(--mono);font-size:.75rem;color:var(--accent);letter-spacing:.06em}
+.qa q{display:block;font-family:var(--serif);font-size:1.05rem;margin:.25rem 0 .35rem}
+.qa q::before,.qa q::after{content:'"'}
+.qa p{font-size:.92rem;color:var(--muted);margin:0}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;font-size:.82rem;color:var(--faint)}
+code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);padding:.1em .35em}
+@media (max-width:640px){.beat{grid-template-columns:1fr;gap:.4rem}.clock{font-size:.76rem}}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Approval memo &middot; Recurring payments</p>
+  <h1>Recovery that knows what a message costs</h1>
+  <p class="lede">A request for a 90-day pilot on one subscription merchant. Everything below is generated by <code>npm run eval</code> from a committed tree; nothing in this document is hand-copied.</p>
+  <div class="meta">
+    <span>Simulation<b>50,000 &times; 20 seeds</b></span>
+    <span>Arms<b>4, paired</b></span>
+    <span>Tests<b>113 passing</b></span>
+    <span>Commit<b>febddba</b></span>
+  </div>
+</header>
+
+<div class="thesis">
+  <p>The standard dunning ruleset destroys <span class="num">&#8377;13,96,472</span> per 50,000 failures versus doing nothing at all. We can measure which side of that line a merchant is on &mdash; per merchant, against a real control group.</p>
+  <p class="why">Leading with a number that goes down. &ldquo;AI recovery agent, +&#8377;2.95L&rdquo; invites &ldquo;versus what?&rdquo;, and the answer is only impressive once the room knows the incumbent is underwater.</p>
+</div>
+
+<section>
+  <h2>Four arms, identical worlds</h2>
+  <p>Every arm sees the same 50,000 failures in the same 20 worlds, paired seed by seed. <b>Baseline</b> retries silently and contacts nobody. <b>Rules</b> is the industry-standard dunning ladder. <b>Oracle</b> knows every outcome in advance &mdash; it is not a competitor, it is the ceiling.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Arm</th><th class="n" style="text-align:right">Net</th><th class="n" style="text-align:right">vs&nbsp;Baseline</th><th class="n" style="text-align:right">Contacts</th><th class="n" style="text-align:right">Churn / contact</th></tr></thead>
+    <tbody>
+      <tr><td>Baseline &mdash; silent retry</td><td class="n">&#8377;3,09,08,483</td><td class="n">&mdash;</td><td class="n">0</td><td class="n">&#8377;0</td></tr>
+      <tr><td>Rules &mdash; dunning ladder</td><td class="n">&#8377;2,95,12,011</td><td class="n neg">&minus;&#8377;13,96,472</td><td class="n">15,152</td><td class="n">&#8377;203</td></tr>
+      <tr class="us"><td>RecoverOS</td><td class="n">&#8377;3,12,03,608</td><td class="n pos">+&#8377;2,95,124</td><td class="n">5,945</td><td class="n">&#8377;81</td></tr>
+      <tr><td>Oracle &mdash; the ceiling</td><td class="n">&#8377;3,19,77,206</td><td class="n pos">+&#8377;10,68,722</td><td class="n">7,256</td><td class="n">&#8377;71</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 700 210" width="100%" height="210" role="img" aria-label="Net value versus the silent-retry baseline. Rules is 13.96 lakh below. RecoverOS is 2.95 lakh above. The Oracle ceiling is 10.69 lakh above.">
+      <line x1="286" y1="16" x2="286" y2="176" stroke="var(--rule)" stroke-width="1"></line>
+      <text x="286" y="196" fill="var(--faint)" font-family="IBM Plex Mono, monospace" font-size="11" text-anchor="middle">Baseline &#8377;3,09,08,483</text>
+      <rect x="130" y="26" width="156" height="26" fill="var(--bad)" opacity="0.82"></rect>
+      <text x="122" y="44" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif" font-size="12.5" text-anchor="end">Rules</text>
+      <text x="138" y="44" fill="var(--ground)" font-family="IBM Plex Mono, monospace" font-size="11.5">&minus;&#8377;13,96,472</text>
+      <rect x="286" y="76" width="33" height="26" fill="var(--accent)"></rect>
+      <text x="278" y="94" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif" font-size="12.5" text-anchor="end" font-weight="600">RecoverOS</text>
+      <text x="327" y="94" fill="var(--accent)" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="500">+&#8377;2,95,124</text>
+      <rect x="286" y="126" width="120" height="26" fill="var(--accent)" opacity="0.3"></rect>
+      <rect x="286" y="126" width="120" height="26" fill="none" stroke="var(--accent)" stroke-dasharray="3 3"></rect>
+      <text x="278" y="144" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif" font-size="12.5" text-anchor="end">Oracle</text>
+      <text x="414" y="144" fill="var(--muted)" font-family="IBM Plex Mono, monospace" font-size="11.5">+&#8377;10,68,722 &mdash; the whole prize</text>
+    </svg>
+    <figcaption>Plotted as distance from Baseline, not from zero. From zero all four bars are within 8% of one another and the story disappears. We capture 28% of what perfect foreknowledge would.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Twenty minutes</h2>
+  <p>Each beat exists to retire one objection. Run them in this order &mdash; the sequence is the argument.</p>
+
+  <div class="beat"><div class="clock">0:00</div><div>
+    <h3>The incumbent is underwater</h3>
+    <p>Show the four-arm table. Rules nets less than doing nothing.</p>
+    <div class="retires"><b>Retires:</b> &ldquo;isn&rsquo;t this just dunning with an LLM on top?&rdquo; It reframes the room from uplift to damage control, which is the only frame in which a modest gain is impressive.</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">2:00</div><div>
+    <h3>Volume is not the lever</h3>
+    <p>Churn per contact: Rules &#8377;203, us &#8377;81, Oracle &#8377;71. The Oracle contacts <em>more</em> customers than we do and still pays less.</p>
+    <div class="retires"><b>Retires:</b> &ldquo;so the product is just &lsquo;send fewer messages&rsquo;?&rdquo; Targeting is the lever; volume is not.</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">5:00</div><div>
+    <h3>The ceiling, published</h3>
+    <p>Perfect foreknowledge beats silent retry by 3.46%. That is the entire prize for anyone, ever, in this world. Anyone selling 30% uplift is quoting gross, not incremental.</p>
+    <div class="retires"><b>Retires:</b> &ldquo;you&rsquo;ll promise the moon.&rdquo; We cannot be undercut on honesty about a bound we published ourselves.</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">8:00</div><div>
+    <h3>The measurement rig</h3>
+    <p>Randomised at customer level, after every gate. Cluster bootstrap on customers, because amount is a per-customer constant off a heavy tail. Estimator validated against planted truth: 17/20 on rate, 19/20 on revenue, against an 18/20 floor set in advance. <b>The rate row misses, and it is in the report untouched.</b></p>
+    <div class="retires"><b>Retires:</b> &ldquo;how do I know these aren&rsquo;t tuned?&rdquo; For a data VP the reported miss is worth more than the twenty passes.</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">11:30</div><div>
+    <h3>The live path</h3>
+    <p>Fire a real test-mode webhook and close the loop on screen. The policy gate is deterministic &mdash; no model, no prompt, no credentials. A model that proposes a transfer produces a <code>REJECT</code>; there is a test. Ten compliance codes in the gate and refused again in the executors. The issuer-degradation detector halts the agent mid-outage.</p>
+    <div class="retires"><b>Retires:</b> Compliance&rsquo;s veto, and &ldquo;an LLM is deciding money movement.&rdquo;</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">15:00</div><div>
+    <h3>What is wrong with it</h3>
+    <p>All five caveats, in the order below. Compliance hears the benchmark gap from us at minute sixteen, not from the README afterwards.</p>
+    <div class="retires"><b>Retires:</b> every objection anyone was saving for Q&amp;A.</div>
+  </div></div>
+
+  <div class="beat"><div class="clock">18:00</div><div>
+    <h3>The ask, and the kill criteria</h3>
+    <p>Two engineers, one part-time data scientist, ninety days, one merchant &mdash; and the pre-committed conditions under which we shut it down ourselves.</p>
+    <div class="retires"><b>Retires:</b> &ldquo;how do we stop this if it doesn&rsquo;t work?&rdquo; Answered before it is asked.</div>
+  </div></div>
+</section>
+
+<section>
+  <h2>What Finance should book</h2>
+  <div class="cols">
+    <div class="card"><h3>Sign, not magnitude</h3><p>+<span class="num">&#8377;2,95,124</span> per 50,000 episodes, 95% CI <span class="num">[&#8377;2,61,537, &#8377;3,28,712]</span>, winning all 20 worlds. That is <b>0.095%</b> of baseline net &mdash; say it out loud before Finance computes it.</p></div>
+    <div class="card"><h3>The commercial line</h3><p>The bookable delta is against <b>Rules</b>, not Baseline: <span class="num">&#8377;16,91,597</span> per 50,000 episodes. No merchant runs silent retry, so that is what a pilot actually displaces.</p></div>
+    <div class="card"><h3>The ceiling caps the pitch</h3><p>3.46% is the whole prize. This is a margin business, not a growth business, and the deck should never imply otherwise.</p></div>
+  </div>
+  <p style="margin-top:1.5rem"><b>What we extrapolate:</b> exactly one thing &mdash; the ordering of the arms and the sign of the Rules delta, as a hypothesis to be re-measured on the merchant&rsquo;s own data with the same holdout.</p>
+  <p><b>What we refuse to extrapolate:</b> any rupee figure multiplied by Razorpay&rsquo;s failed-payment volume; per-merchant projections before that merchant&rsquo;s holdout reads out; and the holdout&rsquo;s own incremental figure as a business case &mdash; it measures treated episodes only and its rate estimator missed the coverage floor. If those appear in a customer deck, that is a misuse and we will say so in writing.</p>
+</section>
+
+<section>
+  <h2>What is wrong with it</h2>
+  <p>Smallest scope first, so the largest one lands on a foundation of demonstrated candour.</p>
+  <ol class="cav">
+    <li><b>It was 0/20 this morning.</b><span>Argmax over the action set was our pre-registered fix. It returned 0/20 and is published as falsified. The report explicitly refuses to credit it for the later win.</span></li>
+    <li><b>Most of the win is a blunt rule.</b><span>At the shipped fatigue rate the term stops discriminating and effectively forbids a second contact inside the window. Graded targeting alone only ties Baseline. We bought this with restraint, not precision.</span></li>
+    <li><b>Our own yardstick was wrong, and a reviewer found it.</b><span>The Oracle was scored on a different objective than it optimised, understating the ceiling 2.4&times;. Correcting it made our result look worse, not better.</span></li>
+    <li><b>The benchmark did not pass through the compliance gates.</b><span>The regulatory check needs a timestamp the eval harness does not supply, so all 50,000 episodes bypassed TRAI, DLT, DND and RBI. &ldquo;Compliance is code&rdquo; describes the product path, not the benchmark. Gates-on benchmark is a day-30 deliverable.</span></li>
+    <li><b>It is our own simulator.</b><span>The world&rsquo;s fatigue mechanism and the policy term that exploits it were authored in the same tree. Held-out seeds confirm noise, not structure &mdash; twenty seeds is twenty draws from one set of assumptions. <b>This is precisely why the ask is a pilot and not a rollout.</b> The pilot exists to kill this objection or kill the product.</span></li>
+  </ol>
+  <p style="margin-top:1.2rem;color:var(--muted);font-size:.92rem">Also open, and not architectural: no mandate lifecycle model, UPI Autopay absent, a full-table scan per webhook, degradation state process-local, sweep section unpopulated.</p>
+</section>
+
+<section>
+  <h2>The ask</h2>
+  <div class="cols">
+    <div class="card"><h3>People</h3><p>Two backend engineers, one data scientist at half time for experiment design, ninety days. PM at half time.</p></div>
+    <div class="card"><h3>Pilot merchant</h3><p>Subscription business, &#8377;5&ndash;50 crore annual recurring, 40k+ failed payments per quarter, card-heavy, already running a dunning ladder we can measure against, willing to hold out 5% at customer level.</p></div>
+    <div class="card"><h3>Success, pre-registered</h3><p>Holdout CI on net contribution excludes zero and is positive; churn per contact below the merchant&rsquo;s current ladder; zero confirmed compliance violations reaching a customer; gates-on benchmark published.</p></div>
+  </div>
+  <div class="kill" style="margin-top:1.4rem">
+    <h3>Kill criteria &mdash; we shut it down ourselves, no debate</h3>
+    <ul>
+      <li>At day 90, the holdout confidence interval includes zero.</li>
+      <li>Measured churn per contact exceeds the merchant&rsquo;s incumbent ladder on any 30-day window.</li>
+      <li>Any single confirmed regulatory violation reaching a customer.</li>
+    </ul>
+    <p style="margin:.8rem 0 0;font-size:.9rem;color:var(--muted)">Written down before the pilot starts, and not renegotiated afterwards.</p>
+  </div>
+</section>
+
+<section>
+  <h2>The questions in the room</h2>
+  <div class="qa">
+    <div><span class="who">CTO</span><q>Where can a model move money?</q><p>Nowhere. The policy gate is deterministic and holds no credentials. There is a test that a proposed transfer becomes a <code>REJECT</code>.</p></div>
+    <div><span class="who">VP Payments</span><q>What breaks at our volume?</q><p>Full-table scan per webhook, and degradation state that a deploy orphans. Both known, both inside the ninety days, neither architectural.</p></div>
+    <div><span class="who">VP Data Science</span><q>Why isn&rsquo;t this overfitting to your own simulator?</q><p>It probably is, partly. Held-out seeds test noise, not structure. That is exactly what the pilot&rsquo;s real holdout is for.</p></div>
+    <div><span class="who">Compliance</span><q>Did the benchmark run through the gates?</q><p>No. The gates are live in the product path and refused twice over, but the 50,000-episode numbers bypassed them. Gates-on benchmark is a day-30 deliverable.</p></div>
+    <div><span class="who">Finance</span><q>What do I book?</q><p>Nothing yet. Book the pilot&rsquo;s cost. The revenue line gets written only after that merchant&rsquo;s own holdout reads out.</p></div>
+  </div>
+</section>
+
+<footer>
+  Every figure regenerates with <code>npm run eval</code> against commit <span class="num">febddba</span>. Where this page and <code>RESULTS.md</code> disagree, <code>RESULTS.md</code> is correct and this page is stale.
+</footer>
+</div>
