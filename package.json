@@ -2,6 +2,9 @@
   "name": "recoveros",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -15,7 +18,7 @@
     "frontier": "tsx scripts/frontier.ts"
   },
   "dependencies": {
-    "next": "15.4.6",
+    "next": "^15.5.25",
     "pg": "^8.23.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",

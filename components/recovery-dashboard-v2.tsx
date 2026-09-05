@@ -98,6 +98,15 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
 
   useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
 
+  // The stream is the trigger and the snapshot is the truth; this is the floor under
+  // the trigger. On a single long-lived server it is redundant. On serverless the
+  // stream and the webhook can be served by different instances, and a change the
+  // stream never saw still reaches the screen within this interval.
+  useEffect(() => {
+    const timer = setInterval(() => { void refresh(); }, 10_000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
   const episodes = snapshot.episodes;
   const selected = episodes.find((e) => e.id === selectedId) ?? episodes[0] ?? null;
   const suppressed = useMemo(

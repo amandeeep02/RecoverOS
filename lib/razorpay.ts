@@ -56,18 +56,7 @@ export async function executeApprovedAction(
   if (input.action === "PAYMENT_LINK" && process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
     attempt = await createRazorpayTestPaymentLink(input, idempotencyKey, deps);
   } else {
-    attempt = {
-      durable: true,
-      result: {
-        actionId: randomUUID(),
-        status: "SIMULATED",
-        executor: "simulated_executor",
-        externalReference: `sim_${input.action.toLowerCase()}_${input.event.paymentId}`,
-        idempotentReplay: false,
-        error: null,
-        executedAt: new Date().toISOString(),
-      },
-    };
+    attempt = simulated(input);
   }
 
   if (attempt.durable) await recoveryStore.saveExecution(idempotencyKey, input.episodeId, input.action, attempt.result);
@@ -102,6 +91,34 @@ function success(externalReference: string): ExecutorAttempt {
       executedAt: new Date().toISOString(),
     },
   };
+}
+
+/** The executor that labels itself: nothing on screen claims a live API call it did not make. */
+function simulated(input: ExecutionInput, note: string | null = null): ExecutorAttempt {
+  return {
+    durable: true,
+    result: {
+      actionId: randomUUID(),
+      status: "SIMULATED",
+      executor: "simulated_executor",
+      externalReference: `sim_${input.action.toLowerCase()}_${input.event.paymentId}`,
+      idempotentReplay: false,
+      error: note,
+      executedAt: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * Razorpay test mode allows 30 payment links per account, ever; cancelling does not
+ * free them. That 429 is not "slow down", it is "this sandbox cannot create links",
+ * and retrying it is pointless. It is also not a decision failure: the policy approved
+ * the action and only the sandbox declined to mint the artifact. So it degrades to the
+ * simulated executor, durably and labelled, exactly as running without keys does.
+ * A production 429 carries no such text and keeps its transient handling below.
+ */
+function isTestModeCap(body: { error?: { code?: string; description?: string } }): boolean {
+  return body.error?.code === "RATE_LIMIT_EXCEEDED" && /test mode limit/i.test(body.error.description ?? "");
 }
 
 /** Razorpay refuses a second link on a reference_id it already holds. That refusal is
@@ -159,6 +176,8 @@ async function createRazorpayTestPaymentLink(input: ExecutionInput, idempotencyK
     }
 
     if (response.status === 429) {
+      const body = (await response.json().catch(() => ({}))) as { error?: { code?: string; description?: string } };
+      if (isTestModeCap(body)) return simulated(input, `Razorpay ${body.error?.description}; executed by the simulated executor`);
       if (attemptIndex < deps.maxRateLimitRetries) {
         await deps.sleep(retryAfterMs(response, attemptIndex, deps));
         continue;
