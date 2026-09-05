@@ -25,6 +25,9 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
   const [liveEvents, setLiveEvents] = useState(0);
   const [lastEventLabel, setLastEventLabel] = useState<string | null>(null);
   const [voiceEpisode, setVoiceEpisode] = useState<RecoveryEpisode | null>(null);
+  // The reveal. Off = the leaderboard every vendor would show (recovered − cost).
+  // On = the same run with churn priced. The ranking flips, and that flip is the thesis.
+  const [priceChurn, setPriceChurn] = useState(true);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
 
@@ -72,7 +75,9 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
     useCallback((event) => {
       if (event.type === "heartbeat") return;
       setLiveEvents((n) => n + 1);
-      if (event.type === "episode.created" || event.type === "episode.updated") {
+      if (event.type === "episode.updated" && event.episode.action === "VOICE_CALL" && event.episode.status === "EXECUTING") {
+        setLastEventLabel(`📞 Calling the customer for ${event.episode.id.slice(0, 12)}… — policy approved a voice call`);
+      } else if (event.type === "episode.created" || event.type === "episode.updated") {
         setLastEventLabel(`${label(event.type.split(".")[1])} ${event.episode.id.slice(0, 12)}… → ${label(event.episode.status)}`);
       } else if (event.type === "degradation.opened") {
         setLastEventLabel(`Degradation opened on ${event.window.key.replace(/\|/g, " · ")} at ${event.window.ratio.toFixed(1)}× baseline`);
@@ -217,19 +222,27 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Measured, not claimed</p>
-            <h2>Same hidden worlds. Four strategies.</h2>
+            <h2>{priceChurn ? "Same hidden worlds. Four strategies. Churn priced." : "The leaderboard every vendor would show you."}</h2>
           </div>
-          <span className="context-note">
-            {snapshot.benchmark.seeds.length} seeds × {snapshot.benchmark.episodesPerSeed.toLocaleString("en-IN")} episodes
-            {" · "}computed in {(snapshot.benchmark.computedInMs / 1000).toFixed(1)}s
-          </span>
+          <div className="benchmark-controls">
+            <button type="button" className={`churn-toggle ${priceChurn ? "on" : "off"}`} onClick={() => setPriceChurn((v) => !v)} aria-pressed={priceChurn}>
+              <i />{priceChurn ? "Churn priced" : "Churn ignored"}
+            </button>
+            <span className="context-note">
+              {snapshot.benchmark.seeds.length} seeds × {snapshot.benchmark.episodesPerSeed.toLocaleString("en-IN")} episodes
+            </span>
+          </div>
         </div>
         <div className="arms-grid">
-          {snapshot.benchmark.arms.map((arm) => (
-            <article key={arm.key} className={`arm ${arm.key === "recoverOs" ? "featured" : ""}`}>
+          {[...snapshot.benchmark.arms]
+            .map((arm) => ({ ...arm, shownNetPaise: priceChurn ? arm.netPaise : arm.netPaise + arm.churnCostPaise }))
+            .sort((a, b) => b.shownNetPaise - a.shownNetPaise)
+            .map((arm, rank) => (
+            <article key={arm.key} className={`arm ${arm.key === "recoverOs" ? "featured" : ""} ${rank === 0 ? "leader" : ""}`}>
+              <span className="arm-rank">#{rank + 1}</span>
               <span className="arm-name">{arm.name}</span>
-              <strong>{formatInr(arm.netPaise)}</strong>
-              <small>net per world — recovered − intervention cost − churn cost</small>
+              <strong>{formatInr(arm.shownNetPaise)}</strong>
+              <small>{priceChurn ? "net per world — recovered − intervention cost − churn cost" : `recovered − intervention cost · hides ${formatInr(arm.churnCostPaise)} of churn`}</small>
               <div className="arm-stats">
                 <span>Recovered <b>{formatInr(arm.recoveredPaise)}</b></span>
                 <span>Actions <b>{arm.interventions.toLocaleString("en-IN")}</b></span>

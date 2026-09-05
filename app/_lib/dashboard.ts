@@ -52,7 +52,7 @@ export interface BenchmarkView {
   nHoldout: number;
   recoveryRateTreatment: number;
   recoveryRateHoldout: number;
-  arms: { key: string; name: string; recoveredPaise: number; netPaise: number; interventions: number; contactsMade: number; recoveryRate: number }[];
+  arms: { key: string; name: string; recoveredPaise: number; netPaise: number; churnCostPaise: number; interventions: number; contactsMade: number; recoveryRate: number }[];
   /** Coverage of the interval against the simulator's planted truth. The only
    *  evidence the instrument is calibrated. */
   coverage: { covered: number; n: number; coverage: number } | null;
@@ -307,6 +307,7 @@ export function getBenchmark(): BenchmarkView {
       name: ARM_NAMES[key],
       recoveredPaise: Math.round(mean(report.perSeed.map((s) => s.arms[key].recoveredPaise))),
       netPaise: Math.round(mean(report.perSeed.map((s) => s.arms[key].netPaise))),
+      churnCostPaise: Math.round(mean(report.perSeed.map((s) => s.arms[key].churnCostPaise))),
       interventions: Math.round(mean(report.perSeed.map((s) => s.arms[key].interventions))),
       contactsMade: Math.round(mean(report.perSeed.map((s) => s.arms[key].contactsMade))),
       recoveryRate: mean(report.perSeed.map((s) => s.arms[key].recoveryRate)),

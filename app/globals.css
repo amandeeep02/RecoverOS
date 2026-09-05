@@ -516,3 +516,16 @@ nav { display:grid; gap:5px; }.nav-item { color:#aebcb3; text-decoration:none; b
 
 .gate-notice { margin:0 0 20px; padding:10px 14px; border:1px solid #f1d9a6; background:#fff7e6; border-radius:8px; color:#7a5a1e; font-size:12px; }
 .gate-notice code { font-size:11px; }
+
+/* Benchmark reveal */
+.benchmark-controls { display:flex; align-items:center; gap:14px; }
+.churn-toggle { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); background:#fff; border-radius:99px; padding:6px 12px 6px 6px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; color:#33413a; }
+.churn-toggle i { width:28px; height:16px; border-radius:99px; background:#cbd7cf; position:relative; transition:background .2s; }
+.churn-toggle i::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .2s; }
+.churn-toggle.on i { background:var(--green); }
+.churn-toggle.on i::after { left:14px; }
+.churn-toggle.off { color:#93633c; border-color:#f1d9a6; background:#fff7e6; }
+.arm { position:relative; transition:transform .25s ease, box-shadow .25s ease; }
+.arm-rank { position:absolute; top:12px; right:14px; font-size:10px; font-weight:700; color:#8a938f; letter-spacing:.5px; }
+.arm.leader { box-shadow:0 0 0 2px var(--green) inset; }
+.arm.leader .arm-rank { color:var(--green); }
