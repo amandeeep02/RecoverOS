@@ -1,77 +1,161 @@
 # RecoverOS
 
-**The intelligence layer for failed recurring payments.**
+**Razorpay AI Buildathon · Track 3: AI Revenue Recovery**
 
-RecoverOS decides whether an intervention can recover more revenue than Razorpay's native recovery behaviour, then makes that decision bounded, explainable, and auditable.
+Revenue recovery that measures its own value against a randomized control, and refuses
+to act when acting destroys money.
 
-It implements the complete loop from the product specification:
-
-```text
-Razorpay webhook → normalize → diagnose → score → EIR → propose
-                 → deterministic policy → executor → outcome → audit → ledger/benchmark
 ```
+  Doing nothing        ₹3,09,08,483    silent retry, contacts nobody
+  RecoverOS            ₹3,12,03,608    +₹2,95,124  ·  20/20 worlds
+  Perfect targeting    ₹3,19,77,206    +₹10,68,722 ·  the ceiling
+```
+
+**We beat a silent-retry baseline on all twenty worlds — and we capture 28% of what is
+available.** A perfect-information policy takes ₹10.68L over doing nothing; we take
+₹2.95L of it and can name most of what we are missing.
+
+We know that because we built the yardstick before we built the policy, and it has been
+wrong twice. It said the ceiling was 1.4% until a Razorpay engineer found our Oracle was
+scored on a different objective than it was graded on; corrected, the ceiling is 3.46%.
+And this result is **0/20 as recently as this morning** — the sign flipped only when a
+contact-fatigue term entered the churn model.
+
+**The honest caveat, before you ask.** Most of that swing is a blunt rule, not clever
+targeting. At the shipped fatigue rate the term stops discriminating and simply forbids a
+second contact inside the window — graded targeting alone is worth ₹8.1L of the ₹10.9L
+swing but only ties Baseline. We bought the win with restraint, not with precision, and
+the remaining ₹7.73L to the Oracle needs a churn signal we do not currently measure.
+
+Reproduce every number above: `npm i && npm test && npm run eval`
+
+> Stated up front: the 50,000-episode figures do **not** pass through the compliance
+> gates — the regulatory check needs a timestamp the eval harness does not supply.
+
+---
 
 ## Run it
 
 ```bash
 npm install
-npm run dev
+npm test          # 113 tests, no network, no API key required
+npm run eval      # 50,000 episodes × 20 seeds → rewrites RESULTS.md
+npm run dev       # http://localhost:3000
 ```
 
-Open `http://localhost:3000` for the merchant dashboard. It contains real demo episode outputs (including WAIT, STOP, PAYMENT_LINK, and ESCALATE) and a generated five-seed benchmark—not static KPI values.
+`RESULTS.md` is generated. Nothing in it is typed by hand. If a number here disagrees
+with it, `RESULTS.md` is right and this file is stale.
 
-```bash
-npm test
-npm run build
-npm run benchmark
-```
+## What it does
 
-`npm run benchmark` evaluates 20 deterministic seeds with 50,000 events per seed and writes `data/generated/benchmark.json`. Use smaller values for a quick local run:
+- **Closes the loop.** Razorpay webhook → diagnose → score → policy → execute → `payment_link.paid`. Real test-mode webhooks, HMAC-verified, idempotent.
+- **Measures itself against a randomized holdout.** 5% of *eligible* episodes, randomized at the **customer** level, value-capped at ₹50,000.
+- **Refuses to act when acting destroys value**, and books both sides of that bet.
+- **Detects issuer degradation** and halts itself, rather than retrying into a dead issuer.
+- **Compliance is code, not a slide** — 10 violation codes, 27 tests, enforced in the policy gate and in the executors.
 
-```bash
-EVENTS_PER_SEED=1000 SEED_COUNT=5 npm run benchmark
-```
+## The thesis
+
+Gross recovered is the category's number and it is mostly unearned. Incremental recovered —
+measured against a control that was deliberately left alone — is the true one, and it is
+much smaller. We report the smaller number.
+
+## Results
+
+Incremental recovery against the randomized holdout — **₹25,31,941 per seed, 95% CI
+[₹22,16,332, ₹28,47,550]** (across-seed Student-t over 20 per-seed point estimates). It is
+reported here rather than at the top on purpose: it measures lift on *treated* episodes
+only, its coverage against its own estimand is 17/20 against a floor we set at 18/20, and
+it did not pass through the compliance gates. The Oracle gap survives all three
+qualifications; this number does not.
+
+
+`npm run eval` — 50,000 episodes × 20 seeds, four arms on identical worlds, paired per seed.
+
+| Arm | Net ₹ | Interventions | Contacts | Churn ₹ |
+|---|---|---|---|---|
+| Baseline (silent retry) | **3,09,08,483** | 42,243 | 0 | 0 |
+| Rules | **2,91,38,575** | 22,725 | 15,152 | 34,46,043 |
+| RecoverOS | **3,00,49,472** | 27,551 | 9,517 | 16,73,653 |
+| Oracle (yardstick) | **3,13,49,414** | 36,897 | 10,352 | 13,38,779 |
+
+## What we measured, including where we lose
+
+Full numbers, and the method behind each interval: `RESULTS.md`, regenerated by `npm run eval`.
+Nothing below is hand-copied — if a figure here disagrees with that file, that file is right.
+
+**We beat a silent-retry baseline by ₹2,95,124 on 20/20 worlds, and we capture 28% of what
+a perfect-information policy would.** The remaining ₹7,73,598 to the Oracle is the roadmap.
+
+Three findings we would rather not have published, all in the generated report:
+
+- **We were 0/20 against that baseline until a contact-fatigue term landed.** Argmax over
+  the action set — which we pre-registered as the fix — returned 0/20 and is recorded as a
+  falsified hypothesis. The report explicitly refuses to credit it for the later win.
+- **Most of the swing is a blunt rule, not targeting.** At the shipped fatigue rate the term
+  stops discriminating and simply forbids a second contact in the window. Graded targeting
+  alone only ties baseline.
+- **Our own yardstick was wrong.** The Oracle was scored on a different objective than it
+  optimised, understating the ceiling by 2.4×. A reviewer found it. Correcting it made our
+  result look worse, not better.
+
 
 ## Architecture
 
-| Layer | Responsibility | Cannot do |
-| --- | --- | --- |
-| `lib/diagnosis.ts`, `lib/scoring.ts`, `lib/proposal.ts` | Interpret structured signals, calculate probabilities/EIR, validate optional LLM proposals | Read payment credentials or execute actions |
-| `lib/policy.ts` | Deterministic merchant constraints, cap enforcement, STOP/WAIT/escalation decisions | Call Razorpay or accept arbitrary actions |
-| `lib/razorpay.ts` | Idempotent payment-link execution boundary | Change policy or make a diagnosis |
-| `lib/pipeline.ts` | Orchestrate state transitions, outcomes, audit events | Bypass the policy result |
-| `lib/simulator.ts` | Produce deterministic hidden-truth worlds and evaluate strategies | Expose latent probabilities to a strategy |
-
-The initial persistence adapter is an in-memory, append-only development store. Its interface is deliberately small so a PostgreSQL adapter can replace it without changing the policy or pipeline contracts.
-
-## Razorpay test mode
-
-Copy `.env.example` to `.env.local` and set test-mode Razorpay credentials:
-
-```text
-RAZORPAY_KEY_ID=rzp_test_...
-RAZORPAY_KEY_SECRET=...
-RAZORPAY_WEBHOOK_SECRET=...
+```
+webhook → normalize → diagnose → score → PROPOSE ─┐
+                                                  ▼
+                                    ╔═══════════════════════╗
+                                    ║  POLICY  (trust edge) ║  deterministic
+                                    ╚═══════════════════════╝  no model, no credentials
+                                                  │
+                                    execute → observe → attribute
 ```
 
-`POST /api/webhooks/razorpay` reads the raw request body, verifies `x-razorpay-signature` whenever a webhook secret is configured, normalizes supported events, and processes each original event ID exactly once. With no test credentials, the executor returns an explicitly labelled `SIMULATED` result; it never implies a live Razorpay call.
+| Layer | May | May not |
+|---|---|---|
+| Reasoner (`diagnosis`, `scoring`, `proposal`) | read features, propose | execute, hold credentials |
+| Policy (`policy`) | approve / reject / suppress / hold | call a model, be non-deterministic |
+| Executor (`razorpay`, `voice`, `whatsapp`) | hold credentials, call APIs | decide |
 
-Supported API surfaces:
+An LLM that proposes `SEND_MONEY` produces a `REJECT`, not a transfer. There is a test.
 
-- `POST /api/webhooks/razorpay`
-- `GET /api/episodes`
-- `GET /api/episodes/:id`
-- `POST /api/episodes/:id/outcome` with `RECOVERED`, `FAILED`, or `EXPIRED`
-- `GET /api/benchmark?count=1000&seeds=5`
+**Where the LLM is** — long-tail failure-code diagnosis and cohort narration. Both are
+language problems. Neither is in the path where money is decided. Prompt-injection input
+is rejected before the model is called, so a hostile failure code is never sent and never
+billed. With no `GROQ_API_KEY` the system falls back to the deterministic path and
+every test still passes offline.
 
-## Safety and measurement
+## Compliance
 
-- Six actions only: `WAIT`, `PAYMENT_LINK`, `REMINDER`, `ESCALATE`, `STOP`, `RETRY`.
-- EIR is `(P(action) - P(native)) × amount - intervention cost`.
-- Native card recovery means `WAIT` is enforced before a customer intervention.
-- There are at most three automated attempts per episode; over-cap and low-confidence cases escalate.
-- Invalid/malformed LLM-shaped actions cannot reach the executor.
-- Audit events are appended on every transition and cannot be silently overwritten.
-- Baseline, rules, and RecoverOS evaluate the same private counterfactual world. The simulated ground-truth generator does not use predicted probabilities.
+**The headline numbers did not run through these gates.** The regulatory check activates
+only when a timestamp is supplied, and the eval harness does not supply one — so all
+50,000 episodes per seed bypassed TRAI quiet hours, DLT, DND and the RBI e-mandate checks.
+That is deliberate (turning them on would refuse roughly half of all contacts on quiet
+hours alone, and that belongs in its own measurement, not folded silently into a
+benchmark) but it means "compliance is code" describes the product path, not the
+benchmark. Stated here rather than only in a code comment.
 
-For production, replace the development store with PostgreSQL, place executor credentials in a secret manager, use a durable queue for webhook work, and configure Razorpay test-mode webhooks before enabling real test calls.
+
+Gates in `lib/compliance.ts`, enforced in `lib/policy.ts` and refused in the executors:
+TRAI quiet hours and DLT template registration, DND with a transactional/promotional
+split, WhatsApp 24-hour service window and opt-in, RBI e-mandate pre-debit notification
+and AFA threshold, DPDP consent and audit-payload redaction. Thresholds live in config
+with source comments — **verify current RBI/TRAI limits before quoting them publicly;
+several have been revised.**
+
+## Not built
+
+`MIGRATE_MANDATE` (card mandate → UPI Autopay) is designed and not implemented. The
+sensitivity sweep runs but its section is not yet in `RESULTS.md`. Estimator coverage
+against its own estimand is 17/20, below the 18/20 floor we set — reported, not tuned.
+
+## Reproducibility
+
+Seeds 1–20, FNV-1a assignment on `customerId` with salt `recoveros-v1`, 50,000 episodes
+each. The world (`lib/simulator.ts`) imports **nothing** from the agent's decision stack —
+verify with `grep -nE 'from "@/lib/(scoring|policy|diagnosis)"' lib/simulator.ts`. Its
+generative forms deliberately differ from the scorer's: native recovery is a logit on the
+raw failure code vs the agent's category table; churn is a logistic with per-customer
+heterogeneity vs the agent's piecewise-linear population curve. Assumptions in
+`SIMULATOR.md`, plan in `IDEA.md`.

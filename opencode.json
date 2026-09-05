@@ -1,0 +1,19 @@
+{
+    "$schema": "https://opencode.ai/config.json",
+    "provider": {
+      "agentrouter": {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "AgentRouter (OpenAI Compatible)",
+        "options": {
+          "baseURL": "https://agentrouter.org/v1"
+        },
+        "models": {
+          "claude-opus-4-8": {
+            "name": "Claude Opus 4.8"
+          }
+        }
+      }
+    },
+    "model": "agentrouter/claude-opus-4-8",
+    "plugin":  ["@dietrichgebert/ponytail"] 
+  }

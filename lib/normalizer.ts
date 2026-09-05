@@ -1,10 +1,28 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { paymentEventSchema, type PaymentEvent } from "@/lib/domain";
 
+/** The event is well-formed but not one we act on. Acknowledge it; do not retry it. */
+export class UnsupportedEventError extends Error {
+  constructor(readonly eventType: string) {
+    super(`Unsupported Razorpay recovery event: ${eventType}`);
+    this.name = "UnsupportedEventError";
+  }
+}
+
 export function verifyRazorpaySignature(rawBody: string, receivedSignature: string | null, secret = process.env.RAZORPAY_WEBHOOK_SECRET) {
-  if (!secret) return { valid: true, verification: "not_configured" as const };
+  // Fail CLOSED. Returning valid:true when the secret is absent means one missing
+  // env var on deploy silently accepts unsigned traffic on a money-moving endpoint.
+  if (!secret) return { valid: false, verification: "not_configured" as const };
   if (!receivedSignature) return { valid: false, verification: "missing" as const };
-  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  
+  // Verify over the RECEIVED BYTES. The previous version re-stringified
+  // (`JSON.stringify(JSON.parse(raw))`) to "normalize whitespace", which silently
+  // breaks on any payload whose canonical form differs from what was signed — a
+  // non-ASCII customer name, a \u escape, a number Razorpay wrote as 1.0. Those
+  // webhooks would fail verification and be dropped as forgeries.
+  const normalizedBody = rawBody;
+
+  const expected = createHmac("sha256", secret).update(normalizedBody).digest("hex");
   const expectedBytes = Buffer.from(expected, "utf8");
   const receivedBytes = Buffer.from(receivedSignature, "utf8");
   return {
@@ -18,15 +36,21 @@ export function normalizeRazorpayEvent(body: unknown, headers: { eventId?: strin
   const source = body as Record<string, any>;
   const eventType = source.event;
   if (!['payment.failed', 'subscription.pending', 'subscription.halted'].includes(eventType)) {
-    throw new Error("Unsupported Razorpay recovery event");
+    // Distinguishable from a malformed payload so the route can 200-ack-and-drop.
+    // Throwing a generic error here produced a 400, and Razorpay retries 4xx — an
+    // unsubscribed event type would be redelivered indefinitely.
+    throw new UnsupportedEventError(String(eventType));
   }
   const payment = source.payload?.payment?.entity ?? {};
   const subscription = source.payload?.subscription?.entity ?? {};
   const method = payment.method === "card" || payment.method === "upi" || payment.method === "netbanking" || payment.method === "wallet" ? payment.method : "unknown";
-  const amountPaise = payment.amount ?? source.payload?.payment?.amount ?? source.amount;
-  const amountInr = Number.isFinite(amountPaise) ? Math.round(Number(amountPaise) / 100) : NaN;
+  const amountPaise = Number.isFinite(payment.amount) ? Number(payment.amount) :
+    Number.isFinite(source.payload?.payment?.amount) ? Number(source.payload.payment.amount) :
+    Number.isFinite(source.amount) ? Number(source.amount) : NaN;
   const rawFailureCode = payment.error_code ?? payment.error_reason ?? subscription.status ?? null;
   const failureSource = mapFailureSource(payment.error_source ?? payment.error_reason ?? "unknown");
+  const rawPhone = payment.customer_contact ?? payment.contact ?? source.payload?.customer?.entity?.contact ?? null;
+  const customerPhone = rawPhone ? normalizeToE164(String(rawPhone)) : null;
   const nativeRecoveryState = source.native_recovery_state
     ?? (eventType === "subscription.halted" ? "EXHAUSTED" : method === "card" ? "ACTIVE" : "UNKNOWN");
   const normalized = {
@@ -37,13 +61,24 @@ export function normalizeRazorpayEvent(body: unknown, headers: { eventId?: strin
     customerId: payment.customer_id ?? subscription.customer_id ?? source.payload?.customer?.entity?.id,
     paymentId: payment.id ?? `subscription:${subscription.id ?? "unknown"}`,
     subscriptionId: payment.subscription_id ?? subscription.id ?? null,
-    amountInr,
+    amountPaise,
     currency: "INR",
     paymentMethod: method,
     failureCode: rawFailureCode ? String(rawFailureCode) : null,
     failureSource,
     nativeRecoveryState,
-    railMetadata: { razorpayEvent: eventType, paymentStatus: payment.status ?? null, subscriptionStatus: subscription.status ?? null },
+    customerPhone,
+    // issuer/network are what lib/degradation.ts keys its windows on. Without them
+    // every card collapses into a single `card|-|-` bucket and issuer-level detection
+    // silently degrades to method-level detection on live traffic.
+    railMetadata: {
+      razorpayEvent: eventType,
+      paymentStatus: payment.status ?? null,
+      subscriptionStatus: subscription.status ?? null,
+      issuer: payment.card?.issuer ?? payment.bank ?? payment.wallet ?? null,
+      network: payment.card?.network ?? (method === "upi" ? "UPI" : null),
+      acquirer: payment.acquirer_data?.authentication_reference_number ? "present" : null,
+    },
   };
   const parsed = paymentEventSchema.safeParse(normalized);
   if (!parsed.success) throw new Error(`Malformed Razorpay webhook: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
@@ -58,4 +93,14 @@ function mapFailureSource(value: unknown): PaymentEvent["failureSource"] {
   if (text.includes("mandate")) return "mandate";
   if (text.includes("customer") || text.includes("auth")) return "customer";
   return "unknown";
+}
+
+/** Normalizes Indian customer contacts to E.164; defaults to +91 for bare 10-digit numbers. */
+export function normalizeToE164(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  if (raw.startsWith("+")) return `+${digits}`;
+  return null;
 }

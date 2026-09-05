@@ -18,11 +18,11 @@ export function RecoveryDashboard({ snapshot }: Props) {
   const selected = snapshot.episodes.find((episode) => episode.id === selectedId) ?? defaultEpisode;
   const audit = snapshot.audits[selected.id] ?? [];
   const metrics = snapshot.benchmark.summary;
-  const bestLift = metrics.recoverOs.incrementalRecoveredInr.mean;
+  const bestLift = metrics.recoverOs.incrementalRecoveredPaise.mean;
   const recoveryRate = metrics.recoverOs.recoveryRate.mean;
   const totals = useMemo(() => ({
-    recovered: metrics.recoverOs.recoveredRevenueInr.mean,
-    native: metrics.baseline.recoveredRevenueInr.mean,
+    recovered: metrics.recoverOs.recoveredRevenuePaise.mean,
+    native: metrics.baseline.recoveredRevenuePaise.mean,
   }), [metrics]);
 
   return (
@@ -52,7 +52,7 @@ export function RecoveryDashboard({ snapshot }: Props) {
         </div>
 
         <section className="kpi-grid" aria-label="Benchmark performance">
-          <Metric label="Revenue at risk" value={formatInr(metrics.recoverOs.recoveredRevenueInr.mean / Math.max(recoveryRate, 0.01))} note="per benchmark world" />
+          <Metric label="Revenue at risk" value={formatInr(metrics.recoverOs.recoveredRevenuePaise.mean / Math.max(recoveryRate, 0.01))} note="per benchmark world" />
           <Metric label="Native recovery" value={formatInr(totals.native)} note="generic retry baseline" />
           <Metric label="RecoverOS recovery" value={formatInr(totals.recovered)} note="policy-bounded actions" tone="success" />
           <Metric label="Incremental recovery" value={formatInr(bestLift)} note="above native recovery" tone="lift" />
@@ -66,9 +66,9 @@ export function RecoveryDashboard({ snapshot }: Props) {
               <table className="queue-table"><thead><tr><th>Customer</th><th>Amount</th><th>Diagnosis</th><th>Expected value</th><th>Action</th><th>Status</th></tr></thead>
                 <tbody>{snapshot.episodes.map((episode) => <tr key={episode.id} onClick={() => setSelectedId(episode.id)} className={episode.id === selected.id ? "selected" : ""}>
                   <td><strong>{customerName(episode.event.customerId)}</strong><small>{episode.event.paymentMethod.toUpperCase()} · {episode.event.paymentId}</small></td>
-                  <td>{formatInr(episode.event.amountInr)}</td>
+                  <td>{formatInr(episode.event.amountPaise)}</td>
                   <td><span className="diagnosis">{label(episode.diagnosis?.category ?? "unknown")}</span><small>{Math.round((episode.diagnosis?.confidence ?? 0) * 100)}% confidence</small></td>
-                  <td className={(episode.eir?.eirInr ?? 0) > 0 ? "positive" : ""}>{formatInr(episode.eir?.eirInr ?? 0)}</td>
+                  <td className={(episode.eir?.eirPaise ?? 0) > 0 ? "positive" : ""}>{formatInr(episode.eir?.eirPaise ?? 0)}</td>
                   <td><span className="action-chip" onClick={(e) => { e.stopPropagation(); if ((episode.policyDecision?.allowedAction ?? episode.proposal?.action) === "VOICE_CALL") setVoiceEpisode(episode); }}>{label(episode.policyDecision?.allowedAction ?? episode.proposal?.action ?? "ESCALATE")}</span></td>
                   <td><span className={`status ${statusClass[episode.status] ?? "muted"}`}>{label(episode.status)}</span></td>
                 </tr>)}</tbody>
@@ -97,7 +97,6 @@ export function RecoveryDashboard({ snapshot }: Props) {
             <Strategy name="Rules" subtitle="Simple failure-code heuristics" metrics={metrics.rules} />
             <Strategy name="RecoverOS" subtitle="Diagnosis + EIR + policy" metrics={metrics.recoverOs} featured />
           </div>
-          <div className="calibration"><div><strong>Calibration check</strong><p>Predicted likelihood compared with observed recovery for policy-approved interventions.</p></div><div className="calibration-bars">{snapshot.benchmark.bySeed[0].recoverOs.calibration.map((point) => <div className="calibration-row" key={point.bucket}><span>{point.bucket}</span><div><i style={{ width: `${point.predicted * 100}%` }} /><b style={{ width: `${point.observed * 100}%` }} /></div><small>{(point.observed * 100).toFixed(0)}%</small></div>)}</div></div>
           <p className="method-note">Simulator outcomes are generated from a private latent model. Strategy predictions never generate or access those outcomes.</p>
         </section>
       </section>
@@ -110,7 +109,7 @@ export function RecoveryDashboard({ snapshot }: Props) {
 function Metric({ label, value, note, tone = "" }: { label: string; value: string; note: string; tone?: string }) { return <article className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 function Control({ label, copy, state }: { label: string; copy: string; state: string }) { return <div className="control"><div><strong>{label}</strong><small>{copy}</small></div><span>{state}</span></div>; }
 function Strategy({ name, subtitle, metrics, featured = false }: { name: string; subtitle: string; metrics: DemoSnapshot["benchmark"]["summary"]["recoverOs"]; featured?: boolean }) {
-  return <article className={`strategy ${featured ? "featured" : ""}`}><div><span>{name}</span>{featured && <b>BEST LIFT</b>}<p>{subtitle}</p></div><strong>{formatInr(metrics.incrementalRecoveredInr.mean)}</strong><small>incremental recovery</small><div className="strategy-stats"><span><b>{Math.round(metrics.interventions.mean)}</b> actions</span><span><b>{Math.round(metrics.wastedInterventions.mean)}</b> wasted</span></div></article>;
+  return <article className={`strategy ${featured ? "featured" : ""}`}><div><span>{name}</span>{featured && <b>BEST LIFT</b>}<p>{subtitle}</p></div><strong>{formatInr(metrics.incrementalRecoveredPaise.mean)}</strong><small>incremental recovery</small><div className="strategy-stats"><span><b>{Math.round(metrics.interventions.mean)}</b> actions</span></div></article>;
 }
 function WhyPanel({ episode }: { episode: DemoSnapshot["episodes"][number] }) {
   const decision = episode.policyDecision;
@@ -118,13 +117,14 @@ function WhyPanel({ episode }: { episode: DemoSnapshot["episodes"][number] }) {
   return <aside className="why-panel"><div className="why-header"><div><p className="eyebrow">Why this action</p><h3>{label(decision?.allowedAction ?? episode.proposal?.action ?? "ESCALATE")}</h3></div><span className={`status ${statusClass[episode.status] ?? "muted"}`}>{label(episode.status)}</span></div>
     <p className="why-copy">{episode.proposal?.explanation}</p><div className="reason-list">{episode.proposal?.reasonCodes.map((reason) => <span key={reason}>✓ {label(reason)}</span>)}</div>
     <div className="probability-grid"><div><span>RecoverOS</span><strong>{((prediction?.pRecoverWithAction ?? 0) * 100).toFixed(0)}%</strong></div><div><span>Native</span><strong>{((prediction?.pRecoverNative ?? 0) * 100).toFixed(0)}%</strong></div></div>
-    <div className="eir-box"><span>Expected incremental recovery</span><strong>{formatInr(episode.eir?.eirInr ?? 0)}</strong><small>{((episode.eir?.incrementalLift ?? 0) * 100).toFixed(0)}% lift · {formatInr(episode.eir?.interventionCostInr ?? 0)} cost</small></div>
+    <div className="eir-box"><span>Expected incremental recovery</span><strong>{formatInr(episode.eir?.eirPaise ?? 0)}</strong><small>{((episode.eir?.incrementalLift ?? 0) * 100).toFixed(0)}% lift · {formatInr(episode.eir?.interventionCostPaise ?? 0)} cost</small></div>
     <div className="policy-result"><span>Policy verdict</span><strong>{decision?.outcome === "APPROVE" ? "Approved" : "Escalated"}</strong><p>{decision?.reasons.map(label).join(" · ")}</p></div>
+    {(episode.customerResponses?.length ?? 0) > 0 && <div className="customer-responses"><span>Customer said</span>{[...episode.customerResponses].reverse().map((response) => <div className="response-item" key={response.responseId}><b>{response.channel === "voice" ? "📞 Voice" : "💬 WhatsApp"}</b><p>"{response.text}"</p><small>{response.confidence != null ? `${Math.round(response.confidence * 100)}% confidence · ` : ""}{formatAuditTime(response.receivedAt)} UTC</small></div>)}</div>}
   </aside>;
 }
 function customerName(id: string) { return ({ cust_aurora: "Aurora Health", cust_basil: "Basil Labs", cust_cedar: "Cedar Studio", cust_delta: "Delta Works", cust_ember: "Ember Finance" } as Record<string, string>)[id] ?? id; }
 function label(value: string) { return value.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase()); }
-function stageTitle(stage: string) { return ({ INGESTED: "Failure signal captured", DIAGNOSED: "Root cause diagnosed", SCORED: "Incremental value scored", PROPOSED: "Bounded action proposed", POLICY: "Policy checks completed", EXECUTED: "Approved action executed", OUTCOME: "Outcome observed" } as Record<string, string>)[stage] ?? stage; }
+function stageTitle(stage: string) { return ({ INGESTED: "Failure signal captured", DIAGNOSED: "Root cause diagnosed", SCORED: "Incremental value scored", PROPOSED: "Bounded action proposed", POLICY: "Policy checks completed", EXECUTED: "Approved action executed", OUTCOME: "Outcome observed", CUSTOMER_RESPONSE: "Customer responded" } as Record<string, string>)[stage] ?? stage; }
 function stageDescription(stage: string, payload: Record<string, unknown>) {
   if (stage === "INGESTED") return "Normalized Razorpay event preserved with its original event ID.";
   if (stage === "DIAGNOSED") return `Classified as ${label(String(payload.category ?? "unknown"))} from supported payment signals.`;
@@ -132,6 +132,7 @@ function stageDescription(stage: string, payload: Record<string, unknown>) {
   if (stage === "PROPOSED") return `Proposal was created without payment credentials or execution authority.`;
   if (stage === "POLICY") return `Deterministic policy result: ${label(String(payload.outcome ?? "checked"))}.`;
   if (stage === "EXECUTED") return `Executor result: ${label(String(payload.status ?? "recorded"))}.`;
+  if (stage === "CUSTOMER_RESPONSE") return `Customer said via ${label(String(payload.channel ?? "channel"))}: "${String(payload.text ?? "").slice(0, 120)}"`;
   return `Episode is now ${label(String(payload.status ?? "pending"))}.`;
 }
 function formatAuditTime(timestamp: string) { return `${timestamp.slice(11, 16)} UTC`; }

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { RecoveryEpisode } from "@/lib/domain";
 import { RecoveryStore } from "@/lib/store";
+import { formatInr } from "@/lib/domain";
+import { checkVoiceCall, DEFAULT_COMPLIANCE_CONFIG, minimizeForAudit, type ComplianceConfig } from "@/lib/compliance";
 
 export type VoiceProvider = "elevenlabs" | "browser" | "twilio";
 
@@ -17,7 +19,7 @@ export interface VoiceCallResult {
 export interface PromiseToPay {
   promiseId: string;
   episodeId: string;
-  promisedAmountInr: number;
+  promisedAmountPaise: number;
   promisedAt: string;
   dueBy: string;
   status: "PENDING" | "FULFILLED" | "BROKEN" | "EXPIRED";
@@ -41,7 +43,7 @@ function getTwilioConfig(): { accountSid: string; authToken: string; fromNumber:
 
 export function generateHinglishScript(episode: RecoveryEpisode): string {
   const { event, profile } = episode;
-  const amount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(event.amountInr);
+  const amount = formatInr(event.amountPaise);
   const method = event.paymentMethod === "upi" ? "UPI" : event.paymentMethod === "card" ? "card" : "payment";
   const name = profile.customerId.slice(-4);
 
@@ -88,28 +90,57 @@ export async function generateElevenLabsAudio(text: string, voiceId = "21m00Tcm4
 export async function executeVoiceCall(
   episode: RecoveryEpisode,
   recoveryStore: RecoveryStore,
-  options: { provider?: VoiceProvider; promiseToPay?: { amount: number; dueBy: string } } = {}
+  options: { provider?: VoiceProvider; promiseToPay?: { amount: number; dueBy: string }; nowIso?: string; complianceConfig?: ComplianceConfig } = {}
 ): Promise<VoiceCallResult> {
   const callId = `call_${randomUUID()}`;
+  const nowIso = options.nowIso ?? new Date().toISOString();
+  const complianceConfig = options.complianceConfig ?? DEFAULT_COMPLIANCE_CONFIG;
+
+  // TRAI TCCCPR quiet hours + DPDP consent/opt-out gate. Checked before any
+  // script is generated or provider contacted, so a non-compliant call is
+  // refused rather than simulated-and-labelled-refused after the fact.
+  const compliance = checkVoiceCall({
+    nowIso,
+    consentValid: episode.profile.consentValid,
+    optedOut: episode.profile.optedOut,
+    config: complianceConfig,
+  });
+  if (!compliance.allowed) {
+    console.error(
+      "Voice call refused by compliance gate:",
+      minimizeForAudit({ episodeId: episode.id, phone: episode.profile.phone, violations: compliance.violations }),
+    );
+    return {
+      callId,
+      status: "failed",
+      provider: "browser",
+      error: `compliance_refused: ${compliance.violations.map((v) => v.code).join(",")}`,
+      executedAt: nowIso,
+    };
+  }
+
   const script = generateHinglishScript(episode);
-  const provider = options.provider ?? "browser";
+  const twilioReady = !!getTwilioConfig() && !!episode.profile.phone;
+  const provider = options.provider ?? (twilioReady ? "twilio" : getElevenLabsKey() ? "elevenlabs" : "browser");
 
   if (provider === "elevenlabs") {
     const audio = await generateElevenLabsAudio(script);
     if (audio) {
-      return { callId, status: "simulated", provider: "elevenlabs", audioUrl: audio.url, executedAt: new Date().toISOString() };
+      return { callId, status: "simulated", provider: "elevenlabs", audioUrl: audio.url, executedAt: nowIso };
     }
   }
 
   if (provider === "browser") {
-    return { callId, status: "simulated", provider: "browser", audioUrl: undefined, executedAt: new Date().toISOString() };
+    return { callId, status: "simulated", provider: "browser", audioUrl: undefined, executedAt: nowIso };
   }
 
   const twilio = getTwilioConfig();
   if (twilio && episode.profile.phone) {
     try {
       const auth = Buffer.from(`${twilio.accountSid}:${twilio.authToken}`).toString("base64");
-      const twiml = `<Response><Say language="hi-IN">${script}</Say><Record maxLength="30" action="https://your-domain.com/webhook/voice-response" /></Response>`;
+      const publicBase = process.env.PUBLIC_BASE_URL?.replace(/\/$/, "");
+      const gather = publicBase ? `<Pause length="1"/><Gather input="speech" language="hi-IN" speechTimeout="auto" action="${publicBase}/api/voice/collect" method="POST"><Say voice="Polly.Aditi" language="hi-IN">Kripya bataiye, payment fail kyun hua tha? Aap Hindi ya English mein jawab de sakte hain.</Say></Gather><Say voice="Polly.Aditi" language="hi-IN">Dhanyavaad. Hum aapko WhatsApp par payment link bhejenge. Alvida.</Say>` : "";
+      const twiml = `<Response><Say voice="Polly.Aditi" language="hi-IN">${script}</Say>${gather}</Response>`;
       const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilio.accountSid}/Calls.json`, {
         method: "POST",
         headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
@@ -117,21 +148,22 @@ export async function executeVoiceCall(
       });
       const data = await response.json();
       if (data.sid) {
-        return { callId, status: "initiated", provider: "twilio", callSid: data.sid, executedAt: new Date().toISOString() };
+        return { callId, status: "initiated", provider: "twilio", callSid: data.sid, executedAt: nowIso };
       }
+      console.error("Twilio call rejected:", data.code, data.message);
     } catch (error) {
       console.error("Twilio call failed:", error);
     }
   }
 
-  return { callId, status: "simulated", provider: "browser", error: "No voice provider configured, using browser simulation", executedAt: new Date().toISOString() };
+  return { callId, status: "simulated", provider: "browser", error: "No voice provider configured, using browser simulation", executedAt: nowIso };
 }
 
-export function createPromiseToPay(episode: RecoveryEpisode, amount: number, dueBy: string): PromiseToPay {
+export function createPromiseToPay(episode: RecoveryEpisode, amountPaise: number, dueBy: string): PromiseToPay {
   return {
     promiseId: `promise_${randomUUID()}`,
     episodeId: episode.id,
-    promisedAmountInr: amount,
+    promisedAmountPaise: amountPaise,
     promisedAt: new Date().toISOString(),
     dueBy,
     status: "PENDING",
@@ -139,17 +171,17 @@ export function createPromiseToPay(episode: RecoveryEpisode, amount: number, due
   };
 }
 
-export function savePromiseToPay(recoveryStore: RecoveryStore, episodeId: string, promise: PromiseToPay) {
-  const existing = recoveryStore.getPromises(episodeId);
-  recoveryStore.savePromises(episodeId, [...existing, promise]);
+export async function savePromiseToPay(recoveryStore: RecoveryStore, episodeId: string, promise: PromiseToPay) {
+  const existing = await recoveryStore.getPromises(episodeId);
+  await recoveryStore.savePromises(episodeId, [...existing, promise]);
 }
 
-export function getPromisesForEpisode(recoveryStore: RecoveryStore, episodeId: string): PromiseToPay[] {
+export async function getPromisesForEpisode(recoveryStore: RecoveryStore, episodeId: string): Promise<PromiseToPay[]> {
   return recoveryStore.getPromises(episodeId);
 }
 
-export function evaluatePromiseToPay(recoveryStore: RecoveryStore, episodeId: string): PromiseToPay[] {
-  const promises = recoveryStore.getPromises(episodeId);
+export async function evaluatePromiseToPay(recoveryStore: RecoveryStore, episodeId: string): Promise<PromiseToPay[]> {
+  const promises = await recoveryStore.getPromises(episodeId);
   const now = new Date().toISOString();
   return promises.map((p) => {
     if (p.status !== "PENDING") return p;

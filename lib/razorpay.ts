@@ -11,7 +11,7 @@ type ExecutionInput = {
 /** Credential boundary: only this module reads Razorpay credentials. */
 export async function executeApprovedAction(input: ExecutionInput, recoveryStore: RecoveryStore): Promise<ExecutionResult> {
   const idempotencyKey = `${input.episodeId}:${input.action}`;
-  const prior = recoveryStore.getExecution(idempotencyKey);
+  const prior = await recoveryStore.getExecution(idempotencyKey);
   if (prior) return { ...prior, idempotentReplay: true };
 
   let result: ExecutionResult;
@@ -28,7 +28,7 @@ export async function executeApprovedAction(input: ExecutionInput, recoveryStore
       executedAt: new Date().toISOString(),
     };
   }
-  recoveryStore.saveExecution(idempotencyKey, result);
+  await recoveryStore.saveExecution(idempotencyKey, input.episodeId, input.action, result);
   return result;
 }
 
@@ -39,7 +39,7 @@ async function createRazorpayTestPaymentLink(input: ExecutionInput): Promise<Exe
       method: "POST",
       headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        amount: input.event.amountInr * 100,
+        amount: input.event.amountPaise,
         currency: "INR",
         reference_id: input.episodeId.slice(0, 40),
         description: `Recover failed subscription payment ${input.event.paymentId}`,
