@@ -18,13 +18,18 @@
 /**
  * Model selection.
  *
- * Both slots run `claude-opus-5`. The `claude-api` skill is explicit that
- * `claude-opus-5` is the default and that a cheaper model is only chosen when
- * the operator asks for one — "Never downgrade for cost - that's the user's
- * decision, not yours." So the downgrade is exposed as an env override rather
- * than baked in: a merchant running slot 1 at long-tail volume can point
- * RECOVEROS_LLM_DIAGNOSIS_MODEL at a smaller model without a code change, and
- * the deterministic floor below the model is identical either way.
+ * Both slots default to `openai/gpt-oss-120b` served by Groq (see GROQ_ENDPOINT
+ * below — an OpenAI-compatible completions API, not Anthropic's). The choice is
+ * latency and unit cost at long-tail volume: slot 1 fires on the ~7% of episodes
+ * whose failure code the deterministic table cannot classify, and slot 2 narrates
+ * cohorts. Neither slot decides money, so the quality bar is "classify a short
+ * opaque string, or admit you cannot" rather than open-ended reasoning.
+ *
+ * Each slot is independently overridable — RECOVEROS_LLM_DIAGNOSIS_MODEL and
+ * RECOVEROS_LLM_NARRATION_MODEL — so an operator who wants a frontier model on
+ * diagnosis can have one without a code change. The deterministic floor beneath
+ * both slots is identical either way: with no credential, `getLlmClient()`
+ * returns null and the classification falls back to the table.
  */
 export const DIAGNOSIS_MODEL = process.env.RECOVEROS_LLM_DIAGNOSIS_MODEL ?? "openai/gpt-oss-120b";
 export const NARRATION_MODEL = process.env.RECOVEROS_LLM_NARRATION_MODEL ?? "openai/gpt-oss-120b";

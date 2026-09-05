@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "verify": "bash scripts/verify.sh",
     "test:watch": "vitest",
     "eval": "tsx scripts/eval.ts",
     "eval:sweep": "tsx scripts/sweep.ts",

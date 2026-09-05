@@ -27,10 +27,14 @@ second contact inside the window — graded targeting alone is worth ₹8.1L of 
 swing but only ties Baseline. We bought the win with restraint, not with precision, and
 the remaining ₹7.73L to the Oracle needs a churn signal we do not currently measure.
 
-Reproduce every number above: `npm i && npm test && npm run eval`
+Reproduce every number above: `npm i && npm run verify`
+(tests, regenerates `RESULTS.md`, and fails if the committed report is not what this tree produces)
 
-> Stated up front: the 50,000-episode figures do **not** pass through the compliance
-> gates — the regulatory check needs a timestamp the eval harness does not supply.
+> Stated up front: the compliance gates now run **inside** the benchmark, as a fifth arm on
+> the same worlds. They cost ₹1,09,483 per seed and the result survives them — but only the
+> time-derived gates can bind, because the world plants no DLT/opt-in/e-mandate facts. The
+> measured cost of compliance is a lower bound. Arming the gate for the first time also
+> surfaced a product bug that had refused every silent mandate retry; see below.
 
 ---
 
@@ -38,7 +42,7 @@ Reproduce every number above: `npm i && npm test && npm run eval`
 
 ```bash
 npm install
-npm test          # 113 tests, no network, no API key required
+npm test          # 141 tests, no network, no API key required
 npm run eval      # 50,000 episodes × 20 seeds → rewrites RESULTS.md
 npm run dev       # http://localhost:3000
 ```
@@ -122,14 +126,31 @@ every test still passes offline.
 
 ## Compliance
 
-**The headline numbers did not run through these gates.** The regulatory check activates
-only when a timestamp is supplied, and the eval harness does not supply one — so all
-50,000 episodes per seed bypassed TRAI quiet hours, DLT, DND and the RBI e-mandate checks.
-That is deliberate (turning them on would refuse roughly half of all contacts on quiet
-hours alone, and that belongs in its own measurement, not folded silently into a
-benchmark) but it means "compliance is code" describes the product path, not the
-benchmark. Stated here rather than only in a code comment.
+**The headline numbers now run through these gates**, as a fifth arm — `RecoverOS
+(regulatory gate on)` — on identical worlds under identical draws, so the difference is
+paired. It costs **₹1,09,483 per seed**, 95% CI [₹85,473, ₹1,33,493], and the compliant
+arm still clears silent-retry Baseline by **₹1,85,641 on 20/20 seeds**. Money recovered
+and compliant escalation are measured in the same run rather than in two runs that never
+met.
 
+**That measurement is a lower bound, and the reason is worth stating.** Only the
+time-derived gates can bind: TRAI quiet hours are adjudicated from each episode's own
+timestamp, which the world has always planted. DLT registration, WhatsApp opt-in, and the
+RBI pre-debit/AFA facts are *granted* to the arm by the harness, because the simulator
+plants no such facts and a fail-closed gate on absent metadata would refuse every contact
+— measuring the simulator's silence rather than the regulation. Planting them is a world
+change and is deliberately not folded in here.
+
+**Arming the gate found a bug that no test caught.** For a silent mandate `RETRY`,
+`lib/policy.ts` declared the channel as `sms` for the compliance check but never populated
+the SMS payload, so the DLT check fell through to its absent-field branch and refused
+*every* mandate retry for want of a template it would never have used — along with quiet
+hours and DPDP contact gates applied to an action that contacts nobody. Measured on 4,000
+episodes: 1,376 of 1,376 approved retries became `REJECT`. Twenty-seven compliance tests
+passed throughout, because they exercised `lib/compliance.ts` directly and nothing armed
+the gate through `lib/policy.ts`. Fixed, with three regression tests that fail against the
+previous version. The defect was reachable only in production, which is the argument for
+running the gate inside the benchmark rather than beside it.
 
 Gates in `lib/compliance.ts`, enforced in `lib/policy.ts` and refused in the executors:
 TRAI quiet hours and DLT template registration, DND with a transactional/promotional
@@ -140,9 +161,13 @@ several have been revised.**
 
 ## Not built
 
-`MIGRATE_MANDATE` (card mandate → UPI Autopay) is designed and not implemented. The
-sensitivity sweep runs but its section is not yet in `RESULTS.md`. Estimator coverage
-against its own estimand is 17/20, below the 18/20 floor we set — reported, not tuned.
+`MIGRATE_MANDATE` (card mandate → UPI Autopay) is designed and not implemented. Estimator
+coverage against its own estimand is 17/20, below the 18/20 floor we set — reported, not
+tuned. Checkout abandonment and B2B receivables are not handled: `lib/normalizer.ts`
+accepts `payment.failed`, `subscription.pending` and `subscription.halted` only, so this
+covers three of the track's seven example directions. The LLM slots are not in the
+measured path — `lib/eval/harness.ts` calls the synchronous `diagnose()`, so no published
+figure in `RESULTS.md` reflects a model call.
 
 ## Reproducibility
 

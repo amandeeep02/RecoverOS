@@ -1,7 +1,7 @@
 import { allowedActions, type ActionProposal, type CustomerProfile, type EIRScore, type MerchantPolicy, type PaymentEvent, type PolicyDecision } from "@/lib/domain";
 import { assignArm, HOLDOUT_VALUE_CAP_PAISE } from "@/lib/experiment";
 import { degradationKey } from "@/lib/degradation";
-import { checkCompliance, isWithinTelemarketingWindow, type Channel, type ComplianceConfig } from "@/lib/compliance";
+import { checkCompliance, checkEMandateDebit, isWithinTelemarketingWindow, type Channel, type ComplianceConfig, type ComplianceViolation } from "@/lib/compliance";
 
 type PolicyInput = {
   event: PaymentEvent;
@@ -130,26 +130,50 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
     const ctx = input.complianceContext ?? {};
     const isMandateDebit = proposedAction === "RETRY" && input.event.subscriptionId !== null;
     if (channel || isMandateDebit) {
-      const verdict = checkCompliance({
-        channel: channel ?? "sms",
-        messageClass: "transactional",
-        nowIso: input.nowIso,
-        consentValid: input.profile.consentValid,
-        optedOut: input.profile.optedOut,
-        config: input.complianceConfig,
-        ...(channel === "sms" ? { sms: { dltTemplateId: ctx.dltTemplateId ?? null } } : {}),
-        ...(channel === "whatsapp" ? { whatsapp: {
-          optedIn: ctx.whatsappOptedIn ?? false,
-          lastCustomerMessageAtIso: ctx.lastCustomerMessageAtIso ?? null,
-          templateId: ctx.whatsappTemplateId ?? null,
-        } } : {}),
-        ...(isMandateDebit ? { eMandate: {
+      // The two regimes are composed separately and deliberately.
+      //
+      // A silent mandate retry SENDS NOTHING. It is governed by RBI's e-mandate
+      // framework, not by TRAI quiet hours or DLT template registration. The
+      // previous shape passed `channel ?? "sms"` into checkCompliance for a RETRY
+      // while omitting the `sms` payload that only a real sms channel populated —
+      // so the DLT check fell through to its absent-field branch and refused every
+      // mandate retry on earth for want of a template it would never have used.
+      // The gate had never been armed in the eval, so nothing caught it: measured
+      // on 4,000 episodes, 1,376/1,376 approved RETRYs became REJECT, 1,422 of them
+      // citing DLT_TEMPLATE_MISSING, plus quiet hours and DPDP contact gates applied
+      // to an action that contacts nobody.
+      const violations: ComplianceViolation[] = [];
+      if (channel) {
+        violations.push(...checkCompliance({
+          channel,
+          messageClass: "transactional",
+          nowIso: input.nowIso,
+          consentValid: input.profile.consentValid,
+          optedOut: input.profile.optedOut,
+          config: input.complianceConfig,
+          ...(channel === "sms" ? { sms: { dltTemplateId: ctx.dltTemplateId ?? null } } : {}),
+          ...(channel === "whatsapp" ? { whatsapp: {
+            optedIn: ctx.whatsappOptedIn ?? false,
+            lastCustomerMessageAtIso: ctx.lastCustomerMessageAtIso ?? null,
+            templateId: ctx.whatsappTemplateId ?? null,
+          } } : {}),
+        }).violations);
+      }
+      if (isMandateDebit) {
+        violations.push(...checkEMandateDebit({
+          nowIso: input.nowIso,
           amountPaise: input.event.amountPaise,
           scheduledDebitAtIso: ctx.scheduledDebitAtIso ?? input.nowIso,
           preDebitNotificationSentAtIso: ctx.preDebitNotificationSentAtIso ?? null,
           afaCompleted: ctx.afaCompleted ?? false,
-        } } : {}),
-      });
+          config: input.complianceConfig,
+        }).violations);
+      }
+      const seen = new Set<string>();
+      const verdict = {
+        allowed: violations.length === 0,
+        violations: violations.filter((v) => (seen.has(v.code) ? false : (seen.add(v.code), true))),
+      };
       if (!verdict.allowed) {
         const codes = verdict.violations.map((v) => v.code);
         return {

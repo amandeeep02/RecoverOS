@@ -64,9 +64,9 @@ export interface EvalConfig {
   bootstrapResamples?: number;
 }
 
-export type ArmName = "BASELINE" | "RULES" | "RECOVEROS" | "ORACLE";
-export type ArmKey = "baseline" | "rules" | "recoverOs" | "oracle";
-export const ARM_KEYS: ArmKey[] = ["baseline", "rules", "recoverOs", "oracle"];
+export type ArmName = "BASELINE" | "RULES" | "RECOVEROS" | "ORACLE" | "RECOVEROS_COMPLIANT";
+export type ArmKey = "baseline" | "rules" | "recoverOs" | "recoverOsCompliant" | "oracle";
+export const ARM_KEYS: ArmKey[] = ["baseline", "rules", "recoverOs", "recoverOsCompliant", "oracle"];
 
 export interface ArmResult {
   arm: ArmName;
@@ -284,12 +284,20 @@ function rulesDecision(item: SyntheticCase): ArmDecision {
   return { action, eligible, executed: eligible };
 }
 
+/**
+ * `regulatory` turns on the gate in lib/policy.ts by supplying the decision's
+ * wall-clock. See COMPLIANCE_MEASUREMENT_NOTE for what that does and does not
+ * measure — in short, only the time-derived gate can bind here, because the
+ * world plants no DLT/opt-in/e-mandate facts and a fail-closed gate on absent
+ * metadata would measure the simulator's silence rather than the regulation.
+ */
 function recoverOsDecision(
   item: SyntheticCase,
   policy: MerchantPolicy,
   caps: { automatedAttemptCount: number; reminderCount: number; voiceCallCount: number },
   unit: RandomizationUnit,
   priorContacts: number,
+  regulatory = false,
 ): ArmDecision {
   const event = eventFromSyntheticCase(item);
   const diagnosis = diagnose(event);
@@ -320,6 +328,22 @@ function recoverOsDecision(
     diagnosisConfidence: diagnosis.confidence,
     degradationWindowId: null,
     episodeId: item.id,
+    // Supplying nowIso is what arms the regulatory gate. The context below grants
+    // the metadata the world does not model, so that exactly one gate can refuse:
+    // the time-derived one. Granting it is the conservative choice — every field
+    // left absent would fail closed and inflate the measured cost of compliance
+    // with the simulator's missing data.
+    ...(regulatory ? {
+      nowIso: new Date(item.occurredAtMs).toISOString(),
+      complianceContext: {
+        dltTemplateId: "DLT_TXN_RECOVERY_001",
+        whatsappOptedIn: true,
+        whatsappTemplateId: "wa_txn_payment_failed_v1",
+        lastCustomerMessageAtIso: new Date(item.occurredAtMs).toISOString(),
+        preDebitNotificationSentAtIso: new Date(item.occurredAtMs - 25 * 60 * 60 * 1000).toISOString(),
+        afaCompleted: true,
+      },
+    } : {}),
   });
 
   // Holdout, suppression and degradation holds all arrive as non-APPROVE
@@ -417,6 +441,10 @@ export function runEval(config: EvalConfig): EvalReport {
     const baselineRun = evaluateArm(world, "BASELINE", (item) => baselineDecision(item), assumptions);
     const rulesRun = evaluateArm(world, "RULES", (item) => rulesDecision(item), assumptions);
     const recoverOsRun = evaluateArm(world, "RECOVEROS", (item, caps, priorContacts) => recoverOsDecision(item, policy, caps, randomizationUnit, priorContacts), assumptions);
+    // Identical policy, identical world, identical CRN — the only difference is that
+    // the regulatory gate is armed. So the per-seed difference against `recoverOs` is
+    // paired and is the cost of compliance, not a comparison of two products.
+    const recoverOsCompliantRun = evaluateArm(world, "RECOVEROS_COMPLIANT", (item, caps, priorContacts) => recoverOsDecision(item, policy, caps, randomizationUnit, priorContacts, true), assumptions);
     const oracleRun = evaluateArm(world, "ORACLE", (item, _caps, priorContacts) => {
       const d = oracle(item, priorContacts);
       const acts = d.action !== "WAIT" && d.action !== "STOP";
@@ -440,6 +468,7 @@ export function runEval(config: EvalConfig): EvalReport {
         baseline: baselineRun.result,
         rules: rulesRun.result,
         recoverOs: recoverOsRun.result,
+        recoverOsCompliant: recoverOsCompliantRun.result,
         oracle: oracleRun.result,
       },
       holdout,
@@ -552,7 +581,7 @@ function evaluateArm(
     // One flag governs the bill and the effect. Nothing is charged for work that
     // did not happen, and nothing that did not happen produces a lift.
     if (executed) {
-      interventionCostPaise += getInterventionCost(action);
+      interventionCostPaise += getInterventionCost(action, assumptions);
       interventions += 1;
       if (action === "ESCALATE") escalations += 1;
       if (EXECUTED_ACTIONS.includes(action)) {
@@ -658,12 +687,18 @@ function computeAggregate(perSeed: SeedResult[]): Record<string, AggregateStat> 
   return result;
 }
 
-function getInterventionCost(action: string): number {
-  const costs: Record<string, number> = {
-    WAIT: 0, PAYMENT_LINK: rupees(12), REMINDER: rupees(4),
-    ESCALATE: rupees(110), STOP: 0, RETRY: rupees(3), VOICE_CALL: rupees(8),
-  };
-  return costs[action] || 0;
+/**
+ * What an action ACTUALLY costs, from the world — not what the agent believes it costs.
+ *
+ * This was a hardcoded table duplicating `interventionCosts` in lib/scoring.ts, so the
+ * evaluator billed every arm at the agent's own price list. Two consequences, both bad:
+ * the agent could never be penalised for mispricing its own actions (its beliefs and
+ * its bill agreed by construction), and `interventionCostScale` in the sensitivity
+ * sweep moved nothing at all — five values across a 4x range returned byte-identical
+ * net, because the parameter fed a table the evaluator never read.
+ */
+function getInterventionCost(action: string, assumptions: GeneratorAssumptions): number {
+  return assumptions.interventionCostPaise[action] ?? 0;
 }
 
 export { tInterval, validateHoldoutEstimator };

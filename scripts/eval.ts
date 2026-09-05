@@ -41,6 +41,7 @@ const ARM_LABEL: Record<ArmKey, string> = {
   baseline: "Baseline (silent retry)",
   rules: "Rules",
   recoverOs: "**RecoverOS**",
+  recoverOsCompliant: "RecoverOS (regulatory gate on)",
   oracle: "Oracle (yardstick)",
 };
 
@@ -86,8 +87,8 @@ function generateResultsMd(report: EvalReport): string {
   L.push("yardstick that separates *\"our decision layer is weak\"* from *\"this world is hostile to");
   L.push("intervention and nobody could do better\"*. It still pays fatigue and churn like everyone else.");
   L.push("");
-  L.push("| Arm | Recovered ₹ | Interventions | of which escalations | Contacts | Cost ₹ | Churn ₹ | Net ₹ | Recovery rate |");
-  L.push("|---|---|---|---|---|---|---|---|---|");
+  L.push("| Arm | Recovered ₹ | Interventions | of which escalations | Contacts | Cost ₹ | Churn ₹ | Net excl. churn ₹ | Net ₹ | Recovery rate |");
+  L.push("|---|---|---|---|---|---|---|---|---|---|");
   for (const arm of ARM_KEYS) {
     L.push(
       `| ${ARM_LABEL[arm]} | ${inr(avg((s) => s.arms[arm].recoveredPaise))} `
@@ -96,11 +97,34 @@ function generateResultsMd(report: EvalReport): string {
       + `| ${avg((s) => s.arms[arm].contactsMade).toFixed(0)} `
       + `| ${inr(avg((s) => s.arms[arm].interventionCostPaise))} `
       + `| ${inr(avg((s) => s.arms[arm].churnCostPaise))} `
+      + `| ${inr(avg((s) => s.arms[arm].recoveredPaise - s.arms[arm].interventionCostPaise))} `
       + `| **${inr(avg((s) => s.arms[arm].netPaise))}** `
       + `| ${pct(avg((s) => s.arms[arm].recoveryRate))} |`,
     );
   }
   L.push("");
+  {
+    // The single question most likely to be asked of this table is "what if I do not
+    // believe your churn cost?" — so it is answered here rather than left to be found.
+    // Every figure below is computed from the same per-seed arrays as the table.
+    const exclChurn = (arm: (typeof ARM_KEYS)[number]) => avg((s) => s.arms[arm].recoveredPaise - s.arms[arm].interventionCostPaise);
+    const ranked = [...ARM_KEYS].filter((a) => a !== "oracle").sort((a, b) => exclChurn(b) - exclChurn(a));
+    const [winner, runnerUp] = ranked;
+    const gap = exclChurn(winner) - exclChurn(runnerUp);
+    L.push("### If you do not price churn");
+    L.push("");
+    L.push("Drop the churn column and rank the deployable arms on recovered − cost alone:");
+    L.push("");
+    for (const arm of ranked) L.push(`- ${ARM_LABEL[arm]} — ${inr(exclChurn(arm))}`);
+    L.push("");
+    L.push(`Under that accounting **${ARM_LABEL[winner]} wins by ${inr(gap)}** over ${ARM_LABEL[runnerUp]}, and`);
+    L.push("this product has no reason to exist. That is not a caveat, it is the thesis: the claim");
+    L.push("is that contacting a dormant subscriber destroys more residual value than the recovery");
+    L.push("is worth, and every number in this report stands or falls on it. The sensitivity sweep");
+    L.push("below reports the churn scale at which the win crosses zero, so the reader can decide");
+    L.push("how much of the claim they are willing to grant.");
+    L.push("");
+  }
   L.push("There is no \"protected value\" column. It used to be here and it was wrong: an arm earned");
   L.push("protection credit on episodes it *skipped*, scored against a churn hazard that its own");
   L.push("earlier contacts had inflated — so nagging a customer and then going quiet scored better");
@@ -128,6 +152,8 @@ function generateResultsMd(report: EvalReport): string {
   const pairs: [ArmKey, ArmKey][] = [
     ["recoverOs", "baseline"], ["recoverOs", "rules"], ["recoverOs", "oracle"],
     ["oracle", "baseline"], ["oracle", "rules"],
+    // Same policy, same worlds, same draws — only the regulatory gate differs.
+    ["recoverOsCompliant", "recoverOs"], ["recoverOsCompliant", "baseline"],
   ];
   const delta = (a: ArmKey, b: ArmKey) => tInterval(perSeed.map((s) => (s.arms[a].netPaise - s.arms[b].netPaise) / 100));
   for (const [a, b] of pairs) {
@@ -178,6 +204,52 @@ function generateResultsMd(report: EvalReport): string {
       const c = armMean(arm, (a) => a.contactsMade);
       return c > 0 ? armMean(arm, (a) => a.churnCostPaise) / c : 0;
     };
+  {
+    // ===== COST OF COMPLIANCE =====
+    // This section exists because the previous version of this report measured money
+    // and compliance in two runs that never met: the gate was real code, fully tested,
+    // and switched off for every published figure. A bar that reads "money recovered
+    // WITH compliant escalation" is not met by satisfying each half separately.
+    const gated = delta("recoverOsCompliant", "recoverOs");
+    const gatedVsBase = delta("recoverOsCompliant", "baseline");
+    const contactsOff = avg((x) => x.arms.recoverOs.contactsMade);
+    const contactsOn = avg((x) => x.arms.recoverOsCompliant.contactsMade);
+    const refusedPct = contactsOff === 0 ? 0 : (100 * (contactsOff - contactsOn)) / contactsOff;
+    const winsVsBase = perSeed.filter((x) => x.arms.recoverOsCompliant.netPaise > x.arms.baseline.netPaise).length;
+    L.push("## Cost of Compliance");
+    L.push("");
+    L.push("`RecoverOS (regulatory gate on)` is the same policy on the same worlds under the same");
+    L.push("random draws, with one difference: `evaluatePolicy` receives the decision's wall-clock,");
+    L.push("which arms the regulatory gate in `lib/policy.ts`. The per-seed difference is therefore");
+    L.push("paired and is the price of obeying the regulator, not a comparison of two products.");
+    L.push("");
+    L.push(`- Contacts, gate off: **${contactsOff.toFixed(0)}** · gate on: **${contactsOn.toFixed(0)}** — ${refusedPct.toFixed(1)}% refused`);
+    L.push(`- Net cost of compliance: **${inr(gated.mean * 100)}** per seed, 95% CI [${inr(gated.ciLo * 100)}, ${inr(gated.ciHi * 100)}]`);
+    L.push(`- Compliant arm vs Baseline: **${inr(gatedVsBase.mean * 100)}**, ${winsVsBase}/${perSeed.length} seeds`);
+    L.push("");
+    if (winsVsBase >= perSeed.length - 2) {
+      L.push("**The compliant arm still clears silent-retry Baseline.** The headline result is not an");
+      L.push("artifact of ignoring the regulator; it survives the gate that the product path enforces.");
+    } else {
+      L.push(`**The compliant arm does NOT reliably clear Baseline (${winsVsBase}/${perSeed.length} seeds).** Stated plainly:`);
+      L.push("under real quiet-hours enforcement this policy's advantage over doing nothing is not");
+      L.push("established. That is the finding, and it is not softened elsewhere in this report.");
+    }
+    L.push("");
+    L.push("### What this does and does not measure");
+    L.push("");
+    L.push("**It is a lower bound.** Ten violation codes are implemented and tested; only the");
+    L.push("time-derived ones can bind here. TRAI quiet hours are adjudicated from the episode's own");
+    L.push("`occurredAtMs`, which the world has always planted. DLT registration, WhatsApp opt-in and");
+    L.push("service window, and the RBI e-mandate pre-debit/AFA facts are **granted** to the arm by the");
+    L.push("harness, because the simulator plants no such facts and a fail-closed gate on absent");
+    L.push("metadata would refuse every contact — measuring the simulator's silence, not the");
+    L.push("regulation. Planting those facts is a world change and is deliberately not folded in here.");
+    L.push("");
+    L.push("So the true cost of compliance is **at least** the figure above, and the gap is one");
+    L.push("this report cannot currently size.");
+    L.push("");
+  }
     L.push("## Hypothesis: was the shortfall an action-space problem?");
     L.push("");
     L.push("The prior diagnosis: `calculateEir` scored only the single action a deterministic");

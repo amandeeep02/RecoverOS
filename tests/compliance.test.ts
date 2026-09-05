@@ -9,6 +9,8 @@ import {
   minimizeForAudit,
   type ComplianceConfig,
 } from "@/lib/compliance";
+import { evaluatePolicy } from "@/lib/policy";
+import { defaultMerchantPolicy } from "@/lib/pipeline";
 
 const config: ComplianceConfig = DEFAULT_COMPLIANCE_CONFIG;
 
@@ -270,5 +272,63 @@ describe("minimizeForAudit", () => {
   it("leaves non-phone data untouched", () => {
     const payload = { amountPaise: 15000, action: "PAYMENT_LINK", reasons: ["all_policy_checks_passed"] };
     expect(minimizeForAudit(payload)).toEqual(payload);
+  });
+});
+
+describe("regulatory gate composition in evaluatePolicy", () => {
+  // These exist because the gate was correct code wired up wrong, and every
+  // existing test passed anyway: the unit tests exercised lib/compliance.ts
+  // directly, and no test armed the gate through lib/policy.ts. The eval harness
+  // never supplied `nowIso`, so the defect could only appear in production.
+  const at = (iso: string) => iso;
+  const baseInput = (action: string, nowIso: string) => ({
+    event: {
+      eventId: "evt_1", eventType: "payment.failed", occurredAt: nowIso, merchantId: "m_1",
+      customerId: "cust_1", paymentId: "pay_1", subscriptionId: "sub_1", amountPaise: 250000,
+      currency: "INR", paymentMethod: "card", failureCode: "insufficient_funds",
+      failureSource: "issuer", nativeRecoveryState: "EXHAUSTED", customerPhone: "+919876543210",
+      railMetadata: { issuer: "HDFC", network: "CARD" },
+    },
+    profile: {
+      customerId: "cust_1", phone: "+919876543210", consentValid: true, optedOut: false,
+      contactWindowOpen: true, daysSinceLastPayment: 10, lifetimeValuePaise: 5000000,
+      subscriptionActive: true, previousInterventionCount: 0,
+    },
+    proposal: { action, confidence: 0.9 },
+    eir: { eirPaise: 50000, eirWithoutChurnPaise: 50000, interventionCostPaise: 300 },
+    policy: { ...defaultMerchantPolicy("m_1"), allowRetry: true, minimumEirPaise: 0, holdoutPct: 0 },
+    automatedAttemptCount: 0, reminderCount: 0, voiceCallCount: 0,
+    diagnosisConfidence: 0.9, degradationWindowId: null, episodeId: "ep_1",
+    nowIso,
+    complianceContext: {
+      scheduledDebitAtIso: nowIso,
+      preDebitNotificationSentAtIso: new Date(Date.parse(nowIso) - 25 * 3600 * 1000).toISOString(),
+      afaCompleted: true,
+    },
+  }) as never;
+
+  it("does not refuse a compliant silent mandate retry at 3am for a missing SMS template", () => {
+    // A RETRY sends nothing. TRAI quiet hours and DLT template registration govern
+    // messages; RBI's e-mandate framework governs this. Passing `channel ?? \"sms\"`
+    // without an sms payload made the DLT check fail closed and refused every
+    // mandate retry, which is both a code defect and a category error.
+    const decision = evaluatePolicy(baseInput("RETRY", at("2026-03-04T21:30:00.000Z")));
+    expect(decision.reasons.join(",")).not.toContain("DLT_TEMPLATE_MISSING");
+    expect(decision.reasons.join(",")).not.toContain("TRAI_QUIET_HOURS");
+    expect(decision.outcome).not.toBe("REJECT");
+  });
+
+  it("still refuses a mandate retry whose RBI pre-debit notice is absent", () => {
+    const input = baseInput("RETRY", at("2026-03-04T12:00:00.000Z")) as Record<string, never>;
+    (input as { complianceContext: { preDebitNotificationSentAtIso: string | null } })
+      .complianceContext.preDebitNotificationSentAtIso = null;
+    const decision = evaluatePolicy(input as never);
+    expect(decision.outcome).toBe("REJECT");
+    expect(decision.reasons.join(",")).toContain("RBI_PREDEBIT_NOTICE_MISSING");
+  });
+
+  it("still applies quiet hours to an action that actually contacts the customer", () => {
+    const decision = evaluatePolicy(baseInput("VOICE_CALL", at("2026-03-04T22:30:00.000Z")));
+    expect(decision.outcome).not.toBe("APPROVE");
   });
 });
