@@ -82,14 +82,14 @@ Razorpay disables endpoints that miss the delivery deadline.
 
 | Claim | Figure |
 |---|---|
-| vs silent-retry Baseline | **+₹2,95,124**, 20/20 seeds |
-| vs Rules | **+₹16,91,597**, 20/20 |
-| vs Oracle (the ceiling) | **−₹7,73,598**, 0/20 |
-| Cost of compliance | **₹1,09,483**/seed |
-| Compliant arm vs Baseline | **+₹1,85,641**, 20/20 |
+| vs silent-retry Baseline | **+₹2,86,581**, 20/20 seeds |
+| vs Rules | **+₹16,79,365**, 20/20 |
+| vs Oracle (the ceiling) | **−₹8,38,912**, 0/20 |
+| Cost of compliance | **₹97,778**/seed |
+| Compliant arm vs Baseline | **+₹1,88,803**, 20/20 |
 
-> "A perfect-information policy beats doing nothing by only 3.5%. That is the entire prize
-> in this world once churn is priced. We take 28% of it, and we can name most of what we
+> "A perfect-information policy beats doing nothing by only 3.7%. That is the entire prize
+> in this world once churn is priced. We take 25% of it, and we can name most of what we
 > are missing."
 
 ### 5. Close on the finding, not the number
@@ -126,16 +126,20 @@ the components and never the join:
 **"Delete the churn column."** Answer before it is asked — the report does.
 Excluding churn, **Rules wins by ₹8,97,792** and this product has no reason to exist.
 Pricing churn *is* the claim. The sweep says how much of it you have to grant: the win
-crosses zero at **~1.74×** the modelled churn hazard, on held-out seeds 6–20.
+crosses zero at **~1.61×** the modelled churn hazard, on held-out seeds 6–20.
 
 **"Your world, your churn model."** Correct, and the sweep is the answer to how much
 weight that assumption carries. Coverage against planted truth is 17/20 against a floor we
 set at 18/20 — reported, not tuned.
 
-**"What did the AI actually earn?"** Nothing measurable, and we say so. The LLM does
-long-tail diagnosis and narration; `lib/eval/harness.ts` calls the synchronous
-`diagnose()`, so no published figure reflects a model call. The win came from a
-contact-fatigue term in a deterministic churn calculation.
+**"What did the AI actually earn?"** Nothing measurable, and we say so. The win came from
+a contact-fatigue term in a deterministic churn calculation, not from the model.
+
+What we can show is the size of the slot. The world carries a 54-string long tail, 51.9%
+of it deliberately non-inferable, on which the deterministic table returns `unknown` 100%
+of the time — and ₹65,314 of our gap to the Oracle opened when that tail went in. That is
+the measured headroom a language model would compete for. We built the slot and measured
+it; we did not fill it, and we would rather report the gap than claim we closed it.
 
 **"Reproduce it."** `npm run verify` — tests, regenerates `RESULTS.md` via eval and sweep,
 and fails if the committed report is not what the tree produces. Timestamp and commit

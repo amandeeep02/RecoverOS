@@ -8,7 +8,18 @@ export type SyntheticCase = {
   merchantId: string;
   amountPaise: number;
   paymentMethod: PaymentEvent["paymentMethod"];
+  /** The string the gateway returned, and the only failure signal the agent sees. */
   failureCode: string;
+  /**
+   * The underlying failure. Equal to `failureCode` for the seven mapped codes; for a
+   * long-tail surface string it is the code that string is an alias OF, and it is
+   * HIDDEN from the agent. Every outcome in this world resolves through this field, so
+   * a diagnosis that recovers it is worth money and one that guesses wrong is charged.
+   */
+  trueFailureCode: string;
+  /** Whether the surface string carries enough signal for the category to be read off
+   *  it. False means the only correct answer is `unknown`. Null for mapped codes. */
+  longTailInferable: boolean | null;
   failureSource: PaymentEvent["failureSource"];
   nativeRecoveryState: PaymentEvent["nativeRecoveryState"];
   profile: CustomerProfile;
@@ -40,6 +51,99 @@ export type HiddenTruth = {
 export type SyntheticWorld = { cases: SyntheticCase[]; hidden: Map<string, HiddenTruth> };
 
 const failureCodes = ["insufficient_funds", "bank_declined", "expired_card", "authentication_failed", "mandate_rejected", "permanent_decline", "network_error", "unmapped_code"] as const;
+
+/**
+ * The long tail. See SIMULATOR.md §1b, written before this code.
+ *
+ * Each entry is a SURFACE string. `trueCode` is the underlying failure, and every
+ * outcome in this world resolves through `trueCode` — only the string the agent sees
+ * differs. That is what a real long tail is: one insufficient-funds failure arrives as
+ * `insuff_bal` from one acquirer, `HDFC_E7743` from another, and `cust said card...`
+ * from an operator who ran out of field width.
+ *
+ * `inferable: true`  — the words carry the category; a competent reader gets it.
+ * `inferable: false` — the string carries NO categorical signal. The correct answer is
+ *                      `unknown` and the correct behaviour is to fall back.
+ *
+ * Nothing here is drawn from a published code set. ISO 8583 and the card-network decline
+ * reasons are published, therefore memorised — `RC_51` is opaque to a human and trivial
+ * to a model, so a vocabulary built from them would measure recall of a specification and
+ * report it as comprehension. The non-inferable class is bank-proprietary numerics,
+ * vendor junk and truncated free text: the part of a real tail no specification covers.
+ */
+export const LONG_TAIL_VOCABULARY: readonly { surface: string; trueCode: string; inferable: boolean }[] = [
+  // ---- Inferable: the category is recoverable from the words present ----
+  { surface: "insuff_bal", trueCode: "insufficient_funds", inferable: true },
+  { surface: "low_balance_retry_later", trueCode: "insufficient_funds", inferable: true },
+  { surface: "acct_balance_low", trueCode: "insufficient_funds", inferable: true },
+  { surface: "funds_unavailable_acct", trueCode: "insufficient_funds", inferable: true },
+  { surface: "balance_short_for_debit", trueCode: "insufficient_funds", inferable: true },
+  { surface: "card_exp_2024", trueCode: "expired_card", inferable: true },
+  { surface: "cc_expired_reissue_needed", trueCode: "expired_card", inferable: true },
+  { surface: "card_validity_over", trueCode: "expired_card", inferable: true },
+  { surface: "expiry_date_in_past", trueCode: "expired_card", inferable: true },
+  { surface: "otp_timeout_customer", trueCode: "authentication_failed", inferable: true },
+  { surface: "3ds_auth_abandoned", trueCode: "authentication_failed", inferable: true },
+  { surface: "cust_did_not_authenticate", trueCode: "authentication_failed", inferable: true },
+  { surface: "pin_incorrect_3_attempts", trueCode: "authentication_failed", inferable: true },
+  { surface: "mandate_cancelled_by_cust", trueCode: "mandate_rejected", inferable: true },
+  { surface: "autopay_disabled_by_user", trueCode: "mandate_rejected", inferable: true },
+  { surface: "standing_instruction_revoked", trueCode: "mandate_rejected", inferable: true },
+  { surface: "mandate_not_active", trueCode: "mandate_rejected", inferable: true },
+  { surface: "issuer_declined_generic", trueCode: "bank_declined", inferable: true },
+  { surface: "bank_refused_transaction", trueCode: "bank_declined", inferable: true },
+  { surface: "issuer_not_permitting_txn", trueCode: "bank_declined", inferable: true },
+  { surface: "card_blocked_permanently", trueCode: "permanent_decline", inferable: true },
+  { surface: "account_closed_by_bank", trueCode: "permanent_decline", inferable: true },
+  { surface: "card_reported_lost", trueCode: "permanent_decline", inferable: true },
+  { surface: "gateway_timeout_upstream", trueCode: "network_error", inferable: true },
+  { surface: "switch_unavailable_retry", trueCode: "network_error", inferable: true },
+  { surface: "connection_reset_by_issuer", trueCode: "network_error", inferable: true },
+
+  // ---- Non-inferable: bank-proprietary numerics. Nothing published, nothing guessable.
+  { surface: "HDFC_E7743", trueCode: "insufficient_funds", inferable: false },
+  { surface: "ICICI_2201", trueCode: "bank_declined", inferable: false },
+  { surface: "AXIS_ERR_88", trueCode: "expired_card", inferable: false },
+  { surface: "SBI_0417", trueCode: "authentication_failed", inferable: false },
+  { surface: "KOTAK_X12", trueCode: "mandate_rejected", inferable: false },
+  { surface: "YESB_4409", trueCode: "network_error", inferable: false },
+  { surface: "IDFC_D31", trueCode: "insufficient_funds", inferable: false },
+  { surface: "INDUS_77Q", trueCode: "permanent_decline", inferable: false },
+
+  // ---- Non-inferable: bare junk and vendor internals ----
+  { surface: "E_2201", trueCode: "bank_declined", inferable: false },
+  { surface: "ERR_5013", trueCode: "network_error", inferable: false },
+  { surface: "9082", trueCode: "insufficient_funds", inferable: false },
+  { surface: "FAIL_03", trueCode: "authentication_failed", inferable: false },
+  { surface: "DECLINE", trueCode: "bank_declined", inferable: false },
+  { surface: "TXN_FAIL", trueCode: "network_error", inferable: false },
+  { surface: "ERROR", trueCode: "insufficient_funds", inferable: false },
+  { surface: "NA", trueCode: "expired_card", inferable: false },
+  { surface: "-", trueCode: "bank_declined", inferable: false },
+  { surface: "unknown_error", trueCode: "mandate_rejected", inferable: false },
+  { surface: "PG_INTERNAL_9", trueCode: "network_error", inferable: false },
+  { surface: "vendor_code_x", trueCode: "permanent_decline", inferable: false },
+
+  // ---- Non-inferable: truncated operator free text ----
+  { surface: "cust said card...", trueCode: "expired_card", inferable: false },
+  { surface: "agent note: cus", trueCode: "insufficient_funds", inferable: false },
+  { surface: "called - no ans", trueCode: "bank_declined", inferable: false },
+  { surface: "ref ticket 4412", trueCode: "authentication_failed", inferable: false },
+  { surface: "per bank ops", trueCode: "mandate_rejected", inferable: false },
+  { surface: "retry per SOP", trueCode: "network_error", inferable: false },
+  { surface: "see note", trueCode: "insufficient_funds", inferable: false },
+  { surface: "escalated 2x", trueCode: "permanent_decline", inferable: false },
+];
+
+/** Reported by `npm run eval` rather than restated in prose, so the documented
+ *  fraction cannot drift from the vocabulary. */
+export const LONG_TAIL_STATS = {
+  total: LONG_TAIL_VOCABULARY.length,
+  inferable: LONG_TAIL_VOCABULARY.filter((v) => v.inferable).length,
+  nonInferable: LONG_TAIL_VOCABULARY.filter((v) => !v.inferable).length,
+  get nonInferableFraction() { return this.nonInferable / this.total; },
+};
+
 
 export interface GeneratorAssumptions {
   /**
@@ -243,9 +347,16 @@ export function generateSyntheticWorld(
         + random() * DAY_MS,
       );
       const outaged = inOutage(occurredAtMs);
-      const failureCode = outaged
+      const drawnCode = outaged
         ? "network_error"
         : weighted(random, failureCodes, [0.28, 0.2, 0.1, 0.09, 0.08, 0.08, 0.1, 0.07]);
+      // The 7% that used to be one literal string. The surface string is what the agent
+      // sees; the world keeps the alias target and resolves every outcome through it.
+      const longTail = drawnCode === "unmapped_code"
+        ? LONG_TAIL_VOCABULARY[Math.floor(random() * LONG_TAIL_VOCABULARY.length)]
+        : null;
+      const failureCode = longTail ? longTail.surface : drawnCode;
+      const trueFailureCode = longTail ? longTail.trueCode : drawnCode;
 
       // The profile is a SNAPSHOT at this point in the customer's history: prior
       // failures accumulate, and dormancy grows with each unresolved period.
@@ -285,11 +396,20 @@ export function generateSyntheticWorld(
       };
       cases.push({
         id, customerId: customer.customerId, merchantId: "merchant_simulated", amountPaise,
-        paymentMethod: customer.paymentMethod, failureCode, failureSource: sourceFor(failureCode),
+        paymentMethod: customer.paymentMethod, failureCode, trueFailureCode,
+        longTailInferable: longTail ? longTail.inferable : null,
+        // A long-tail episode reports source "unknown", NOT the source of its hidden
+        // true code. Deriving the source from the truth leaks the answer through a
+        // second channel: `lib/diagnosis.ts` infers `network_gateway_failure` from
+        // `failureSource` alone, so five non-inferable strings were being classified
+        // correctly for free — scoring the answer key, not the string. The assumption
+        // is also the realistic one: a platform that could not map the code generally
+        // could not attribute the source either.
+        failureSource: longTail ? "unknown" : sourceFor(trueFailureCode),
         nativeRecoveryState, profile, occurredAtMs, issuer: customer.issuer, priorFailures,
       });
 
-      const nativeLogit = (assumptions.nativeLogitByCode[failureCode] ?? -0.3)
+      const nativeLogit = (assumptions.nativeLogitByCode[trueFailureCode] ?? -0.3)
         + Math.min(customer.baseSuccesses, 12) * 0.05
         - Math.min(failedPaymentCount, 6) * 0.09
         - Math.min(daysSinceLastSuccess, 180) * 0.004
@@ -300,7 +420,7 @@ export function generateSyntheticWorld(
       const actionProbability = {} as Record<ActionProposal["action"], number>;
       const isHighValue = profile.customerValuePaise > rupees(20_000);
       for (const action of actionSchema.options) {
-        let effect = hiddenInterventionEffect(action, failureCode, nativeRecoveryState, profile);
+        let effect = hiddenInterventionEffect(action, trueFailureCode, nativeRecoveryState, profile);
         if (isContactAction(action)) effect *= assumptions.contactResponseRate;
         if (action === "VOICE_CALL" && isHighValue) effect *= assumptions.voiceLiftMultiplier;
         actionProbability[action] = clamp(nativeProbability + effect, 0.005, 0.995);

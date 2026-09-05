@@ -555,7 +555,11 @@ describe("issuer degradation survives a deploy", () => {
     const drained = await processDueDrains(store, fixedClock(Date.now() + DEGRADATION_CONFIG.DRAIN_JITTER_MS + 1));
     expect(drained).toContain(episode.id);
     const settled = await store.getEpisode(episode.id);
-    expect(settled?.status).not.toBe("HELD_DEGRADED");
+    // Positive assertion. `not.toBe("HELD_DEGRADED")` passes on a REJECT too, which is
+    // exactly how the release path shipped refusing every episode it released while this
+    // test stayed green.
+    expect(settled?.policyDecision?.outcome).toBe("APPROVE");
+    expect(settled?.status).toBe("PENDING");
   });
 
   it("does not refuse a released episode on regulatory facts the merchant has on file", async () => {

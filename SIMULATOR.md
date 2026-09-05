@@ -43,6 +43,73 @@ engagementProxy = true
 
 ---
 
+## 1b. The long tail of failure codes
+
+**Status: assumption, written before the code that implements it.**
+
+`unmapped_code` was one literal string drawn at 7%. That is not a long tail, it is a
+placeholder wearing one: a vocabulary of cardinality 1 is solved by a single lookup, so
+any measurement of a model's ability to read it measures nothing.
+
+It is replaced by a vocabulary of **surface strings**. Each is an alias: the underlying
+failure is one of the seven real codes, and the world resolves every outcome —
+`nativeLogitByCode`, `hiddenInterventionEffect` — through that hidden true code. Only the
+string the agent sees differs. This is what a real long tail is. The same
+insufficient-funds failure arrives as `insuff_bal`, as `HDFC_E7743`, and as
+`cust said card...`, depending on which acquirer, gateway and operator it passed through.
+
+### Two classes, and why the split is the whole point
+
+**Inferable.** The string contains words a competent human reader could map to a
+category: `card_exp_2024`, `otp_timeout_cust`, `mandate_cancelled_by_cust`. A model
+should get these right, and getting them right is worth money because the correct
+category selects the correct action.
+
+**Non-inferable.** The string carries no categorical signal at all: bank-proprietary
+numerics (`HDFC_E7743`), bare junk (`DECLINE`, `NA`, `-`), and truncated operator notes
+(`cust said card...`, `called - no ans`). For these the correct answer is `unknown`, and
+the correct behaviour is to fall back to the deterministic path.
+
+**Nothing published is used to build the non-inferable class.** ISO 8583 response codes
+and card-network decline reasons are published, therefore memorised: `RC_51` looks opaque
+to a human and is trivial to a model. A vocabulary built from published sets would measure
+recall of a specification and report it as comprehension. The non-inferable class is
+bank-proprietary strings, vendor junk and truncated free text — the part of a real long
+tail that no specification covers.
+
+### The headline metric is calibration, not accuracy
+
+Accuracy on the inferable slice is worth reporting and is **gameable by whoever writes the
+vocabulary**: make the strings obvious and the score goes up. It is the answer key reading
+itself back, which is the defect this repository has already had once, in the churn curve.
+
+The headline is therefore **calibration on the non-inferable slice**: given a string that
+genuinely carries no signal, does the model return `unknown` and fall back, or does it
+guess? That cannot be gamed by vocabulary choice, because there is no answer to plant —
+the only correct behaviour is an admission of ignorance.
+
+Guessing is not free, and the cost is measured rather than asserted. Every episode still
+has a true underlying code, so a confident wrong category selects the wrong action and the
+world charges for it in rupees, on the same paired arms as everything else.
+
+### The answer must not leak through a second channel
+
+A long-tail episode reports `failureSource: "unknown"`, not the source of its hidden true
+code. This was found by measurement, not foresight: deriving the source from the truth let
+`lib/diagnosis.ts` infer `network_gateway_failure` from the source field alone, and five
+non-inferable strings were being classified correctly for free — scoring the answer key
+rather than the string. With the leak closed the deterministic table returns `unknown` on
+**100%** of long-tail episodes, so nothing is won without reading the string.
+
+The assumption is independently the realistic one: a platform that could not map the code
+generally could not attribute the source either.
+
+### Fractions
+
+The vocabulary, its class split and the exact non-inferable fraction are defined in
+`lib/simulator.ts` (`LONG_TAIL_VOCABULARY`) and reported by `npm run eval` rather than
+restated here, so this section cannot drift from the code.
+
 ## 2. Hidden Ground Truth
 
 Each episode gets latent probabilities **never visible to any strategy**:

@@ -313,9 +313,13 @@ describe("regulatory gate composition in evaluatePolicy", () => {
     // without an sms payload made the DLT check fail closed and refused every
     // mandate retry, which is both a code defect and a category error.
     const decision = evaluatePolicy(baseInput("RETRY", at("2026-03-04T21:30:00.000Z")));
+    // Positive, not `not.toBe("REJECT")` — an ESCALATE would satisfy that too, and an
+    // escalation here would be the same defect wearing a different outcome: a human
+    // paged at 3am for a silent retry that no regulation touches.
+    expect(decision.outcome).toBe("APPROVE");
+    expect(decision.allowedAction).toBe("RETRY");
     expect(decision.reasons.join(",")).not.toContain("DLT_TEMPLATE_MISSING");
     expect(decision.reasons.join(",")).not.toContain("TRAI_QUIET_HOURS");
-    expect(decision.outcome).not.toBe("REJECT");
   });
 
   it("still refuses a mandate retry whose RBI pre-debit notice is absent", () => {
