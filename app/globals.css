@@ -451,3 +451,36 @@ nav { display:grid; gap:5px; }.nav-item { color:#aebcb3; text-decoration:none; b
   .frontier-head { flex-direction:column; }
   .frontier-lower { grid-template-columns:1fr; }
 }
+
+/* Refusals, side by side -------------------------------------------------- */
+/* The economic refusal and the regulatory one are different claims, so they get
+   equal weight and never share a card. Equal columns say that visually. */
+.refusal-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:24px; align-items:start; }
+@media (max-width:900px) { .refusal-grid { grid-template-columns:1fr; } }
+
+.regulatory-refusals { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:22px; height:100%; }
+.regulatory-refusals .ledger-header { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+.regulatory-refusals .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.9px; }
+.regulatory-refusals .net-value { font-size:24px; font-weight:700; letter-spacing:-.8px; }
+/* Deliberately not green and not red: a regulatory refusal is neither a win nor a
+   loss, and colouring it either way editorialises a rule into a result. */
+.regulatory-refusals .net-value.neutral { color:var(--ink); }
+.ledger-subhead { font-size:12px; color:#6d7773; line-height:1.55; margin:14px 0 0; }
+
+.violation-list { list-style:none; margin:14px 0 0; padding:0; display:grid; gap:8px; }
+.violation-list li {
+  display:grid; grid-template-columns:auto 1fr auto; gap:4px 10px; align-items:baseline;
+  border:1px solid var(--line); border-left:4px solid #b8863b; border-radius:9px; padding:10px 12px; background:#fbf8f2;
+}
+.violation-code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700; color:#7a5a1f; letter-spacing:.2px; }
+.violation-meaning { font-size:12px; color:var(--ink); line-height:1.4; }
+.violation-count { font-size:12px; font-weight:700; color:#75807a; font-variant-numeric:tabular-nums; }
+.violation-reg { grid-column:1 / -1; font-size:9px; text-transform:uppercase; letter-spacing:.8px; color:#8a938f; }
+.regulatory-refusals .secondary-link { margin-top:14px; display:inline-block; background:none; border:none; padding:0; cursor:pointer; font-size:12px; }
+
+/* A citation, not a sentence: the code stays verbatim so it can be grepped out of a
+   screenshot and matched against lib/compliance.ts. */
+.regulatory-citations { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.regulatory-citation { display:flex; flex-direction:column; gap:2px; padding:8px 10px; border:1px solid var(--line); border-left:4px solid #b8863b; border-radius:8px; background:#fbf8f2; }
+.regulatory-citation code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700; color:#7a5a1f; }
+.regulatory-citation small { font-size:9px; text-transform:uppercase; letter-spacing:.7px; color:#8a938f; }

@@ -52,9 +52,21 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
   const consentValid = input.profile.consentValid && !input.profile.optedOut;
   // profile.contactWindowOpen is a static flag nobody ever computed from a clock.
   // With nowIso present the real TRAI window governs and the flag becomes an AND.
-  const withinContactWindow = input.nowIso
-    ? input.profile.contactWindowOpen && isWithinTelemarketingWindow(input.nowIso, input.complianceConfig)
-    : input.profile.contactWindowOpen;
+  //
+  // The two halves are kept separate because they are different facts and the audit
+  // trail has to be able to tell them apart: one is a merchant preference the merchant
+  // can change, the other is a regulation they cannot. Collapsed into a single boolean
+  // — as they were — every quiet-hours refusal was recorded as
+  // `outside_merchant_contact_window`, blaming the merchant for TRAI's rule and making
+  // the regulatory refusal unattributable after the fact.
+  const traiWindowOpen = input.nowIso ? isWithinTelemarketingWindow(input.nowIso, input.complianceConfig) : true;
+  const withinContactWindow = input.profile.contactWindowOpen && traiWindowOpen;
+  // Matches the `REGULATION:CODE` shape the compliance gate emits, so a consumer of
+  // the audit trail sees one vocabulary for regulatory refusals regardless of which
+  // check caught it first.
+  const contactWindowReason = traiWindowOpen
+    ? "outside_merchant_contact_window"
+    : "TRAI_TCCCPR_2018:TRAI_QUIET_HOURS";
   const hasPhone = !!input.profile.phone;
   const eirAboveThreshold = input.eir.eirPaise >= input.policy.minimumEirPaise;
   const actionAllowed = actionKnown
@@ -106,13 +118,13 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
   }
   if (proposedAction === "REMINDER") {
     if (input.policy.requireConsentForReminder && !consentValid) return escalateOrStop("contact_consent_missing_or_opted_out");
-    if (!withinContactWindow) return escalateOrStop("outside_merchant_contact_window");
+    if (!withinContactWindow) return escalateOrStop(contactWindowReason);
     if (!messageBudgetRemaining) return escalateOrStop("message_cap_reached");
   }
   if (proposedAction === "VOICE_CALL") {
     if (!hasPhone) return escalateOrStop("customer_phone_missing");
     if (!consentValid) return escalateOrStop("contact_consent_missing_or_opted_out");
-    if (!withinContactWindow) return escalateOrStop("outside_merchant_contact_window");
+    if (!withinContactWindow) return escalateOrStop(contactWindowReason);
     if (!voiceBudgetRemaining) return escalateOrStop("voice_call_cap_reached");
   }
   if (proposedAction === "RETRY" && !nativeRecoveryComplete) {

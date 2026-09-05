@@ -112,7 +112,7 @@ export async function buildDemoSnapshot(seed = 7): Promise<DemoSnapshot> {
 
   // Process all historical episodes
   // Process all historical episodes
-  const policy = { merchantId: "merchant_demo", minimumEirPaise: rupees(150), maxAutomatedAttempts: 3, maxMessagesPerEpisode: 2, maxVoiceCallsPerEpisode: 1, allowRetry: true, allowPaymentLinks: true, allowVoiceCalls: true, requireConsentForReminder: true, highValueEscalationThresholdPaise: rupees(50_000), dltTemplateId: "RECOVEROS_TXN_PAYMENT_FAILED_V1", preDebitNotificationByPlatform: true, minimumEscalationValuePaise: rupees(2_500), churnAversion: 1, holdoutPct: 5 };
+  const policy = { merchantId: "merchant_demo", minimumEirPaise: rupees(150), maxAutomatedAttempts: 3, maxMessagesPerEpisode: 2, maxVoiceCallsPerEpisode: 1, allowRetry: true, allowPaymentLinks: true, allowVoiceCalls: true, requireConsentForReminder: true, highValueEscalationThresholdPaise: rupees(50_000), dltTemplateId: "RECOVEROS_TXN_PAYMENT_FAILED_V1", dltSenderHeader: "RCVROS", preDebitNotificationByPlatform: true, minimumEscalationValuePaise: rupees(2_500), churnAversion: 1, holdoutPct: 5 };
   
   for (const ep of historicalEpisodes) {
     await processPaymentFailure(ep.event as any, recoveryStore, policy);

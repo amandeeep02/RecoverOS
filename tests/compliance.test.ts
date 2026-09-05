@@ -319,9 +319,9 @@ describe("regulatory gate composition in evaluatePolicy", () => {
   });
 
   it("still refuses a mandate retry whose RBI pre-debit notice is absent", () => {
-    const input = baseInput("RETRY", at("2026-03-04T12:00:00.000Z")) as Record<string, never>;
-    (input as { complianceContext: { preDebitNotificationSentAtIso: string | null } })
-      .complianceContext.preDebitNotificationSentAtIso = null;
+    const input = baseInput("RETRY", at("2026-03-04T12:00:00.000Z")) as unknown as
+      { complianceContext: { preDebitNotificationSentAtIso: string | null } };
+    input.complianceContext.preDebitNotificationSentAtIso = null;
     const decision = evaluatePolicy(input as never);
     expect(decision.outcome).toBe("REJECT");
     expect(decision.reasons.join(",")).toContain("RBI_PREDEBIT_NOTICE_MISSING");

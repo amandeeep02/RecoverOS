@@ -22,7 +22,7 @@ const profile: CustomerProfile = {
   phone: null,
   isSubscription: true, daysSinceLastEngagement: 30, engagementProxy: true,
 };
-const policy: MerchantPolicy = { merchantId: event.merchantId, minimumEirPaise: rupees(150), maxAutomatedAttempts: 3, maxMessagesPerEpisode: 2, maxVoiceCallsPerEpisode: 1, allowRetry: false, allowPaymentLinks: true, allowVoiceCalls: true, requireConsentForReminder: true, highValueEscalationThresholdPaise: rupees(50_000), dltTemplateId: "RECOVEROS_TXN_PAYMENT_FAILED_V1", preDebitNotificationByPlatform: true, minimumEscalationValuePaise: rupees(2_500), churnAversion: 1, holdoutPct: 5 };
+const policy: MerchantPolicy = { merchantId: event.merchantId, minimumEirPaise: rupees(150), maxAutomatedAttempts: 3, maxMessagesPerEpisode: 2, maxVoiceCallsPerEpisode: 1, allowRetry: false, allowPaymentLinks: true, allowVoiceCalls: true, requireConsentForReminder: true, highValueEscalationThresholdPaise: rupees(50_000), dltTemplateId: "RECOVEROS_TXN_PAYMENT_FAILED_V1", dltSenderHeader: "RCVROS", preDebitNotificationByPlatform: true, minimumEscalationValuePaise: rupees(2_500), churnAversion: 1, holdoutPct: 5 };
 
 describe("Expected Incremental Recovery", () => {
   it("uses incremental lift and intervention cost, not gross recovery", () => {

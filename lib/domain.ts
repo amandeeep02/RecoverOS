@@ -160,6 +160,8 @@ export const merchantPolicySchema = z.object({
   /** DLT-registered template id for transactional recovery SMS. Absent ⇒ the SMS
    *  path is refused, which is the correct TRAI behaviour for an unregistered sender. */
   dltTemplateId: z.string().nullable().default(null),
+  /** DLT-registered sender header (6 chars) that goes with the template above. */
+  dltSenderHeader: z.string().nullable().default(null),
   /** Razorpay Subscriptions issues the RBI pre-debit notification on the merchant's
    *  behalf. A merchant on that rail has the obligation met by the platform; one
    *  running its own mandates does not and must not silently be assumed compliant. */

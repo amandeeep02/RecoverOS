@@ -20,7 +20,37 @@ import { transitionEpisode } from "@/lib/state-machine";
 import { RecoveryStore } from "@/lib/store";
 import { DEGRADATION_CONFIG, DegradationDetector, getDegradationDetector, getHydratedDegradationDetector, keyString, type DegradationWindow } from "@/lib/degradation";
 import { realtimeServer } from "@/lib/realtime";
-import { DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID } from "@/lib/compliance";
+import { DEFAULT_COMPLIANCE_CONFIG, DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID, type ComplianceConfig } from "@/lib/compliance";
+
+/**
+ * DLT registration is a per-MERCHANT fact, not a global one, so the shipped registry
+ * in DEFAULT_COMPLIANCE_CONFIG is deliberately empty and fails closed. This turns the
+ * merchant's declared template id into a registry entry for that merchant.
+ *
+ * Without it the two halves disagreed: `defaultMerchantPolicy` declared a template id
+ * while the registry knew nothing about it, so `checkSmsSend` took its absent-template
+ * branch and refused every SMS reminder in production — a template the policy claimed
+ * was registered. Same seam, and the same failure mode, as the mandate-retry defect:
+ * two components each correct on their own, disagreeing where they meet.
+ */
+function complianceConfigFor(policy: MerchantPolicy): ComplianceConfig {
+  if (!policy.dltTemplateId) return DEFAULT_COMPLIANCE_CONFIG;
+  return {
+    ...DEFAULT_COMPLIANCE_CONFIG,
+    dlt: {
+      ...DEFAULT_COMPLIANCE_CONFIG.dlt,
+      templates: {
+        ...DEFAULT_COMPLIANCE_CONFIG.dlt.templates,
+        [policy.dltTemplateId]: {
+          templateId: policy.dltTemplateId,
+          header: policy.dltSenderHeader ?? "RCVROS",
+          messageClass: "transactional" as const,
+          approved: true,
+        },
+      },
+    },
+  };
+}
 
 export function defaultMerchantPolicy(merchantId: string): MerchantPolicy {
   // A merchant live on Razorpay Subscriptions: DLT template registered, pre-debit
@@ -242,7 +272,8 @@ export async function runRecoveryPipeline(
       nowIso: new Date(clock.now()).toISOString(),
       // The gate can only refuse if nobody tells it what the merchant has configured.
       // Absent fields still fail closed — this supplies facts, it does not assume them.
-      complianceContext: {
+      complianceConfig: complianceConfigFor(policy),
+    complianceContext: {
         dltTemplateId: policy.dltTemplateId ?? null,
         whatsappOptedIn: profile.consentValid && !profile.optedOut,
         lastCustomerMessageAtIso: episode.customerResponses.at(-1)?.receivedAt ?? null,

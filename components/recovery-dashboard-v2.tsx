@@ -5,6 +5,7 @@ import { formatInr } from "@/lib/domain";
 import type { DashboardSnapshot } from "@/app/_lib/dashboard";
 import { IncrementalLedger } from "@/components/incremental-ledger";
 import { ProtectedLedger } from "@/components/protected-ledger";
+import { RegulatoryRefusals } from "@/components/regulatory-refusals";
 import { DegradationBanner } from "@/components/degradation-banner";
 import { KillSwitch } from "@/components/kill-switch";
 import { DemoControls } from "@/components/demo-controls";
@@ -115,8 +116,15 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
         <IncrementalLedger benchmark={snapshot.benchmark} />
       </section>
 
-      <section className="ledger-grid">
+      {/* The two refusals, side by side and both priced. One is the scorer's
+          judgement, the other is a rule; a merchant has to be able to tell them
+          apart, so they never share a card. */}
+      <section className="refusal-grid">
         <ProtectedLedger ledger={snapshot.ledger} suppressed={suppressed} onSelect={setSelectedId} />
+        <RegulatoryRefusals refusals={snapshot.refusals} onSelect={setSelectedId} />
+      </section>
+
+      <section className="ledger-grid">
         <div className="ledger-card">
           <div className="ledger-stat">
             <span className="ledger-label">Revenue at risk in queue</span>

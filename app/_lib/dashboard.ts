@@ -2,6 +2,7 @@ import type { AuditEvent, CustomerProfile, PaymentEvent, RecoveryEpisode } from 
 import { merchantPolicySchema, rupees, type MerchantPolicy } from "@/lib/domain";
 import { ingestPaymentFailure, observeOutcome, defaultMerchantPolicy } from "@/lib/pipeline";
 import { store } from "@/lib/store";
+import { fixedClock, systemClock } from "@/lib/clock";
 import { getDegradationDetector, DEGRADATION_CONFIG, keyString } from "@/lib/degradation";
 import { runEval } from "@/lib/eval/harness";
 import { tInterval } from "@/lib/eval/estimators";
@@ -71,8 +72,25 @@ export interface DegradationView {
   heldEpisodeIds: string[];
 }
 
+/**
+ * What the agent declined to do, and what declining was worth.
+ *
+ * Split by WHO refused, because the two are different claims and a merchant needs
+ * to tell them apart. An economic refusal is the scorer's judgement and could be
+ * wrong. A regulatory refusal is not a judgement at all — it cites a rule, and the
+ * only question is whether the rule was read correctly.
+ */
+export interface RefusalView {
+  count: number;
+  /** Face value of the payments we were not permitted to chase, this run. */
+  deferredPaise: number;
+  codes: { regulation: string; code: string; count: number }[];
+  episodeIds: string[];
+}
+
 export interface DashboardSnapshot {
   episodes: EpisodeView[];
+  refusals: RefusalView;
   audits: Record<string, AuditEvent[]>;
   ledger: LedgerView;
   benchmark: BenchmarkView;
@@ -105,7 +123,7 @@ export function demoPolicy(): MerchantPolicy {
 
 /** Bumped when SEED_CASES changes, so a re-seed produces new episodes instead of
  *  silently colliding with stored decisions made under a previous policy. */
-const SEED_VERSION = "v2";
+const SEED_VERSION = "v4";
 
 const globalSeed = globalThis as unknown as { recoverOsSeeded?: Promise<void> };
 
@@ -121,6 +139,17 @@ type SeedCase = {
   daysDormant: number;
   phone: string | null;
   resolveAs?: "RECOVERED";
+  /**
+   * Decide this episode at a fixed wall-clock instead of "now".
+   *
+   * The regulatory gate reads the clock at the moment of decision, which is correct
+   * and which makes a quiet-hours refusal invisible for the twelve hours a day the
+   * window is open — including, most likely, whenever this is being demonstrated.
+   * `lib/pipeline.ts` already takes the clock as an injected dependency, so pinning
+   * it for one seeded episode changes nothing about the path that episode travels:
+   * the same normalizer, the same scorer, the same gate, the same audit trail.
+   */
+  decideAtIso?: string;
 };
 
 /**
@@ -138,6 +167,11 @@ const SEED_CASES: SeedCase[] = [
   // Dormant subscribers. Whether these suppress is the scorer's call, not ours.
   { paymentId: "pay_5D2", customerId: "cust_frost", amountRupees: 999, method: "upi", failureCode: "insufficient_funds", native: "EXHAUSTED", issuer: "ICICI", network: "UPI", daysDormant: 210, phone: null },
   { paymentId: "pay_9G7", customerId: "cust_gale", amountRupees: 2_499, method: "upi", failureCode: "insufficient_funds", native: "EXHAUSTED", issuer: "KOTAK", network: "UPI", daysDormant: 200, phone: null },
+  // Decided at 22:40 IST — inside TRAI's quiet hours. A healthy, contactable customer
+  // whose only problem is the hour, so the refusal that follows is the regulator's and
+  // nothing else's. Pinned rather than left to chance because otherwise the workspace
+  // shows a regulatory refusal only between 21:00 and 09:00.
+  { paymentId: "pay_4Q3", customerId: "cust_harrow", amountRupees: 11_250, method: "card", failureCode: "insufficient_funds", native: "EXHAUSTED", issuer: "AXIS", network: "VISA", daysDormant: 6, phone: "+919876543215", decideAtIso: "2026-03-04T17:10:00.000Z" },
 ];
 
 function seedProfile(c: SeedCase): CustomerProfile {
@@ -190,7 +224,8 @@ async function seedOnce(): Promise<void> {
   const policy = demoPolicy();
   for (const c of SEED_CASES) {
     await store.saveProfile(seedProfile(c));
-    const { episode } = await ingestPaymentFailure(seedEvent(c), store, policy);
+    const clock = c.decideAtIso ? fixedClock(Date.parse(c.decideAtIso)) : systemClock();
+    const { episode } = await ingestPaymentFailure(seedEvent(c, c.decideAtIso), store, policy, clock);
     if (c.resolveAs === "RECOVERED" && (episode.status === "PENDING" || episode.status === "PROMISED")) {
       await observeOutcome(episode.id, "RECOVERED", store);
     }
@@ -362,6 +397,37 @@ export function buildLedger(episodes: RecoveryEpisode[]): LedgerView {
   };
 }
 
+/**
+ * Regulatory refusals only. The economic side already has an owner — `buildLedger`
+ * books suppression on both sides — and duplicating it here would give the dashboard
+ * two sources of truth for the same number.
+ *
+ * A regulatory refusal is a REJECT whose reasons carry a `REGULATION:CODE` pair. That
+ * shape is produced only by the compliance gate in lib/policy.ts, so matching on it
+ * cannot accidentally sweep in a budget or action-space rejection.
+ */
+export function buildRefusals(episodes: EpisodeView[]): RefusalView {
+  const isRegulatory = (r: string) => r.includes(":") && r === r.toUpperCase();
+  // Not filtered on outcome. A regulatory refusal reaches the merchant as a REJECT
+  // when the compliance gate catches it and as an ESCALATE when the earlier
+  // contact-window check does — the customer is not contacted either way, so both
+  // belong here. Keying on the `REGULATION:CODE` vocabulary rather than the outcome
+  // is what makes that possible.
+  const refused = episodes.filter((e) => e.policyDecision?.reasons.some(isRegulatory));
+  const tally = new Map<string, number>();
+  for (const e of refused) {
+    for (const r of e.policyDecision!.reasons.filter(isRegulatory)) tally.set(r, (tally.get(r) ?? 0) + 1);
+  }
+  return {
+    count: refused.length,
+    deferredPaise: refused.reduce((t, e) => t + e.event.amountPaise, 0),
+    codes: [...tally]
+      .map(([pair, count]) => ({ regulation: pair.split(":")[0], code: pair.split(":")[1], count }))
+      .sort((a, b) => b.count - a.count),
+    episodeIds: refused.map((e) => e.id),
+  };
+}
+
 export function buildDegradationView(episodes: RecoveryEpisode[]): DegradationView {
   const detector = getDegradationDetector(store);
   return {
@@ -407,6 +473,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
 
   return {
     episodes: episodes.map(toEpisodeView),
+    refusals: buildRefusals(episodes.map(toEpisodeView)),
     audits,
     ledger: buildLedger(episodes),
     benchmark: getBenchmark(),

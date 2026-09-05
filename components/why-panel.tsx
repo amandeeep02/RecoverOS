@@ -8,6 +8,12 @@ function label(value: string) {
   return value.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
+/** A regulatory reason arrives as `REGULATION:CODE`. Sentence-casing it turns a
+ *  citation into mush — "Trai Tcccpr 2018:trai Quiet Hours" — so it keeps its own
+ *  shape: the code stays verbatim and machine-greppable, the regulation is the
+ *  attribution beside it. */
+const isRegulatory = (r: string) => r.includes(":") && r === r.toUpperCase();
+
 const stageTitle: Record<string, string> = {
   INGESTED: "Failure signal captured",
   DIAGNOSED: "Root cause diagnosed",
@@ -71,7 +77,22 @@ export function WhyPanel({ episode, audit }: { episode: EpisodeView; audit: Audi
         <div className="policy-result">
           <span>Policy verdict</span>
           <strong>{label(decision.outcome)}{decision.arm ? ` · arm ${label(decision.arm)}` : ""}</strong>
-          <p>{decision.reasons.map(label).join(" · ")}</p>
+          {decision.reasons.some(isRegulatory) && (
+            <div className="regulatory-citations">
+              {decision.reasons.filter(isRegulatory).map((r) => {
+                const [regulation, code] = r.split(":");
+                return (
+                  <span key={r} className="regulatory-citation">
+                    <code>{code}</code>
+                    <small>{label(regulation)}</small>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {decision.reasons.some((r) => !isRegulatory(r)) && (
+            <p>{decision.reasons.filter((r) => !isRegulatory(r)).map(label).join(" · ")}</p>
+          )}
           {decision.degradationWindowId && <p className="muted-note">Held under degradation window {decision.degradationWindowId}</p>}
         </div>
       )}
