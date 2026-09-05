@@ -421,6 +421,24 @@ describe("the executor tells a blip apart from a refusal", () => {
     expect(result.status).toBe("EXECUTED");
   });
 
+  it("degrades to the labelled simulated executor on Razorpay's test-mode link cap, without retrying", async () => {
+    const store = new RecoveryStore();
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { code: "RATE_LIMIT_EXCEEDED", description: "test mode limit of 30 reached for payment_link" } }), { status: 429 });
+    }) as unknown as typeof fetch;
+    const result = await executeApprovedAction(input, store, { fetch: fetchImpl, ...noSleep });
+    expect(result).toMatchObject({ status: "SIMULATED", executor: "simulated_executor", idempotentReplay: false });
+    expect(result.externalReference).toMatch(/^sim_payment_link_/);
+    expect(result.error).toMatch(/test mode limit/);
+    expect(calls).toBe(1);
+    // Durable: the sandbox will say the same thing next time, so the answer is kept.
+    const replay = await executeApprovedAction(input, store, { fetch: fetchImpl, ...noSleep });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(calls).toBe(1);
+  });
+
   it("exhausted 429 retries are still transient, not a poisoned key", async () => {
     const store = new RecoveryStore();
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) =>
