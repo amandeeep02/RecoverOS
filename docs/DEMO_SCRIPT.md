@@ -37,7 +37,7 @@ After the question, answer in one sentence: "My card was blocked after I lost it
 > figure on screen, with its confidence interval. Everything else today is in service
 > of making that number honest.
 
-## 0:30 — The two refusals
+## 1:00 — The two refusals
 
 **[Point to the two cards side by side.]**
 
@@ -62,7 +62,7 @@ After the question, answer in one sentence: "My card was blocked after I lost it
 > server and it says so on screen. Earlier tonight, with it on, it refused our own test
 > call at a quarter to eleven. That refusal is in the queue.
 
-## 1:20 — How that call happened (checkout tab)
+## 1:40 — How that call happened (checkout tab)
 
 **[Switch to /checkout. The timeline from the cold open is still on screen.]**
 
@@ -85,7 +85,7 @@ Netbanking, Failure, and the phone rings a second time.]**
 > Twilio read a Hindi script the system wrote for this episode, asked why, and the answer
 > you heard me give is the last line of the timeline, and the last line of the audit trail.
 
-## 2:45 — Close the loop
+## 2:40 — Close the loop
 
 **[Dashboard. Click "POST /api/webhooks/razorpay". Wait one second. Click "Customer pays the link".]**
 
@@ -97,7 +97,7 @@ Netbanking, Failure, and the phone rings a second time.]**
 > Same event again: a duplicate, no second transition. Razorpay redelivers webhooks, so
 > both halves of the loop have to be idempotent.
 
-## 3:15 — The kill switch
+## 3:05 — The kill switch
 
 **[Scroll to the degradation panel. Open the outage.]**
 
@@ -116,39 +116,40 @@ Netbanking, Failure, and the phone rings a second time.]**
 > Hysteresis close, then a jittered drain, and the held episodes go back through the
 > policy gate as if they had just arrived.
 
-## 3:55 — The measurement
+## 3:45 — The measurement
 
 **[Scroll to the benchmark panel. Click the toggle to "Churn ignored" BEFORE you speak.]**
 
-> How do we know any of this is worth money? Thousands of episodes across a dozen hidden
-> worlds, four strategies on identical worlds, paired per seed. The simulator imports
-> nothing from our decision code.
+> How do we know any of this is worth money? Twelve hidden worlds, three thousand
+> episodes each, four strategies on identical worlds, paired per seed. The simulator
+> imports nothing from our decision code.
 >
 > This is the leaderboard every vendor would show you: recovered minus cost. A plain rules
-> engine that messages everyone is in first place. We are behind it. On this board, our
-> product has no reason to exist.
+> engine that messages everyone is first, at nineteen lakh twenty-one thousand a world. We
+> are third, at eighteen lakh sixty-six. On this board, our product has no reason to exist.
 
 **[Click the toggle to "Churn priced". The cards re-rank; Rules drops to the bottom.]**
 
-> Same run. One change: we price the subscribers those messages drove away. Rules falls to
-> last, below doing nothing at all, and we move ahead of silent retry. That single flip
-> is the entire thesis. The full report at fifty thousand episodes and twenty seeds says the
-> same thing:
+> Same run. One change: we price the subscribers those messages drove away. Rules was
+> hiding one lakh seventy-seven thousand of churn per world, because it contacted nine
+> hundred and thirteen customers to our three hundred and fifty-six. It falls to last,
+> seventy-nine thousand below doing nothing at all. We move ahead of silent retry by
+> fourteen thousand a world, and the oracle, which reads the answer key, is only sixty
+> thousand ahead of it. We capture about a quarter of what is available, and we can name
+> most of what we miss.
 >
-> Silent retry recovers three crore five lakh net. We beat it by two lakh eighty-seven
-> thousand on twenty of twenty worlds, one lakh eighty-nine with the compliance gate
-> armed inside the run. A perfect-information oracle beats it by eleven and a quarter
-> lakh. We capture about a quarter of what is available, and we can name most of what
-> we miss.
+> The full report, fifty thousand episodes across twenty worlds, says the same thing: we
+> beat silent retry on twenty of twenty, and one lakh eighty-nine thousand of that survives
+> the compliance gate armed inside the run.
 >
 > Three things we would rather not have to say. Drop the churn column and a plain rules
-> engine wins by nine lakh and this product has no reason to exist; pricing churn is the
-> whole claim. Most of our win is a blunt rule, not clever targeting: at the shipped rate
+> engine wins, here and in the full report, and this product has no reason to exist;
+> pricing churn is the whole claim. Most of our win is a blunt rule, not clever targeting: at the shipped rate
 > the fatigue term simply forbids a second contact. And our own yardstick was wrong once,
 > understating the ceiling by two and a half times, until a reviewer found it. Fixing it
 > made us look worse.
 
-## 4:45 — Close
+## 4:40 — Close
 
 **[Back to the dashboard header.]**
 

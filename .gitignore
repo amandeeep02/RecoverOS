@@ -6,3 +6,4 @@ coverage
 .env.local
 data/generated
 tsconfig.tsbuildinfo
+.DS_Store

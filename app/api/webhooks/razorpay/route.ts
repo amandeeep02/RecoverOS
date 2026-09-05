@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { extractPaymentLinkPaid, normalizeRazorpayEvent, verifyRazorpaySignature, UnsupportedEventError } from "@/lib/normalizer";
 import { drainProcessingQueue, ensureBackgroundWorkers, ingestPaymentFailureQueued, observePaymentLinkPaid } from "@/lib/pipeline";
 import { store } from "@/lib/store";
@@ -51,11 +51,11 @@ export async function POST(request: NextRequest) {
 
     const result = await ingestPaymentFailureQueued(event, store);
 
-    // Best effort, deliberately not awaited: on a long-lived Node server this makes
-    // the queue latency effectively zero, and if the platform freezes the instance
-    // after the response instead, the episode is still PENDING in the table and the
-    // next poll — here or on another instance — claims it.
-    if (!result.duplicate) void drainProcessingQueue(store).catch(() => {});
+    // Runs after the 202 is sent. On a long-lived Node server this makes the queue
+    // latency effectively zero; on serverless, `after` keeps the instance alive for
+    // the drain instead of freezing it mid-flight. Either way the episode is durable in
+    // the table first, so a lost drain is picked up by the next poll on any instance.
+    if (!result.duplicate) after(() => drainProcessingQueue(store).catch(() => {}));
 
     return NextResponse.json(
       {

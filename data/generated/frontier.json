@@ -1,0 +1,205 @@
+{
+  "generatedAt": "2026-09-05T12:50:20.773Z",
+  "episodes": 20000,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "shippedPoint": {
+    "churnAversion": 1,
+    "minimumEscalationRupees": 2500
+  },
+  "bestOnGrid": {
+    "param": "churnAversion",
+    "value": 4,
+    "netPaise": 1259815982.2
+  },
+  "reference": {
+    "baselineNetPaise": 1238445817.4,
+    "rulesNetPaise": 1181536699.6,
+    "oracleNetPaise": 1282135361.4
+  },
+  "shipped": {
+    "netPaise": 1245421655.8,
+    "recoveredPaise": 1291167985,
+    "costPaise": 8558620,
+    "churnPaise": 37187709.2,
+    "interventions": 11527.8,
+    "baselineNetPaise": 1238445817.4,
+    "rulesNetPaise": 1181536699.6,
+    "oracleNetPaise": 1282135361.4
+  },
+  "rows": [
+    {
+      "param": "churnAversion",
+      "value": 0,
+      "netPaise": 1075189681.4,
+      "recoveredPaise": 1279731182.2,
+      "costPaise": 13079680,
+      "churnPaise": 191461820.8,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 0.5,
+      "netPaise": 1187522353.8,
+      "recoveredPaise": 1298870725.8,
+      "costPaise": 10347900,
+      "churnPaise": 101000472,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 1,
+      "netPaise": 1245421655.8,
+      "recoveredPaise": 1291167985,
+      "costPaise": 8558620,
+      "churnPaise": 37187709.2,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 1.5,
+      "netPaise": 1257100360,
+      "recoveredPaise": 1284214549,
+      "costPaise": 8044820,
+      "churnPaise": 19069369,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 2,
+      "netPaise": 1258963152.8,
+      "recoveredPaise": 1281030418.6,
+      "costPaise": 7867960,
+      "churnPaise": 14199305.8,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 2.5,
+      "netPaise": 1259624169.6,
+      "recoveredPaise": 1279637145.2,
+      "costPaise": 7793920,
+      "churnPaise": 12219055.6,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 3,
+      "netPaise": 1259750596.2,
+      "recoveredPaise": 1279297268.6,
+      "costPaise": 7738820,
+      "churnPaise": 11807852.4,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 4,
+      "netPaise": 1259815982.2,
+      "recoveredPaise": 1278677545.2,
+      "costPaise": 7645780,
+      "churnPaise": 11215783,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "churnAversion",
+      "value": 5,
+      "netPaise": 1259601834.6,
+      "recoveredPaise": 1277836804.6,
+      "costPaise": 7584820,
+      "churnPaise": 10650150,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "minimumEscalationValue",
+      "value": 0,
+      "netPaise": 1238690181.6,
+      "recoveredPaise": 1296782910.8,
+      "costPaise": 20905020,
+      "churnPaise": 37187709.2,
+      "interventions": 12650.2,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "minimumEscalationValue",
+      "value": 1000,
+      "netPaise": 1244183552.2,
+      "recoveredPaise": 1293894281.4,
+      "costPaise": 12523020,
+      "churnPaise": 37187709.2,
+      "interventions": 11888.2,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "minimumEscalationValue",
+      "value": 2500,
+      "netPaise": 1245421655.8,
+      "recoveredPaise": 1291167985,
+      "costPaise": 8558620,
+      "churnPaise": 37187709.2,
+      "interventions": 11527.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "minimumEscalationValue",
+      "value": 5000,
+      "netPaise": 1243752732.4,
+      "recoveredPaise": 1287228661.6,
+      "costPaise": 6288220,
+      "churnPaise": 37187709.2,
+      "interventions": 11321.4,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    },
+    {
+      "param": "minimumEscalationValue",
+      "value": 10000,
+      "netPaise": 1243086789.4,
+      "recoveredPaise": 1286160118.6,
+      "costPaise": 5885620,
+      "churnPaise": 37187709.2,
+      "interventions": 11284.8,
+      "baselineNetPaise": 1238445817.4,
+      "rulesNetPaise": 1181536699.6,
+      "oracleNetPaise": 1282135361.4
+    }
+  ]
+}
