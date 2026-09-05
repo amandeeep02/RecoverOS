@@ -1,6 +1,7 @@
 // lib/degradation.ts
 import { Clock } from "@/lib/clock";
 import type { RecoveryStore } from "@/lib/store";
+import type { PersistedDegradationState } from "@/lib/memory-store";
 import type { PaymentEvent } from "@/lib/domain";
 import { mulberry32, type Rng } from "@/lib/rng";
 
@@ -57,24 +58,99 @@ export function degradationKey(e: PaymentEvent): DegradationKey {
   };
 }
 
+interface KeyState {
+  baseline: number;
+  open: boolean;
+  window: DegradationWindow | null;
+  consecutiveBelow: number;
+  seenWindows: number;
+  counters: WindowCounter;
+}
+
 export class DegradationDetector {
-  private readonly windows = new Map<string, { 
-    baseline: number; 
-    open: boolean; 
-    window: DegradationWindow | null; 
-    consecutiveBelow: number; 
-    seenWindows: number;
-    counters: WindowCounter;
-  }>();
-  
+  private readonly windows = new Map<string, KeyState>();
+
   private readonly store: RecoveryStore;
   private readonly clock: Clock;
   private readonly rng: Rng;
+  private hydration: Promise<void> | null = null;
 
   constructor(store: RecoveryStore, clock: Clock = { now: () => Date.now() }, rng?: Rng) {
     this.store = store;
     this.clock = clock;
     this.rng = rng ?? mulberry32(42);
+  }
+
+  // -------------------------------------------------------------------------
+  // Durability
+  //
+  // The baseline, the open window and the hysteresis counter are this object's
+  // entire reason to exist, and they were held in a process-local Map: a deploy
+  // during an outage dropped the open window (releasing every held episode into an
+  // issuer that was still down, or stranding them forever), and a second instance
+  // behind the load balancer learned a completely different baseline from the half
+  // of the traffic it happened to see. The injected `store` was assigned and never
+  // read. It is read now.
+  // -------------------------------------------------------------------------
+
+  /** Serialisable view of every key. Counters are included: a mid-window restart
+   *  should not throw away the attempts already counted toward this window. */
+  snapshot(): PersistedDegradationState[] {
+    const now = this.clock.now();
+    return [...this.windows.entries()].map(([keyString, state]) => ({
+      keyString,
+      baseline: state.baseline,
+      open: state.open,
+      consecutiveBelow: state.consecutiveBelow,
+      seenWindows: state.seenWindows,
+      attempts: state.counters.attempts,
+      failures: state.counters.failures,
+      window: state.window ? (JSON.parse(JSON.stringify(state.window)) as Record<string, unknown>) : null,
+      updatedAtMs: now,
+    }));
+  }
+
+  /**
+   * Merge persisted state in. Keys this process has already recorded against keep
+   * their live counters — hydration must never lose an attempt that arrived while
+   * the read was in flight — but adopt the durable baseline and open window, which
+   * a fresh process cannot have invented for itself.
+   */
+  restore(states: ReadonlyArray<PersistedDegradationState>): void {
+    for (const persisted of states) {
+      const existing = this.windows.get(persisted.keyString);
+      const counters: WindowCounter = existing
+        ? { attempts: existing.counters.attempts + persisted.attempts, failures: existing.counters.failures + persisted.failures }
+        : { attempts: persisted.attempts, failures: persisted.failures };
+      this.windows.set(persisted.keyString, {
+        baseline: persisted.baseline,
+        open: persisted.open,
+        window: (persisted.window as unknown as DegradationWindow | null) ?? null,
+        consecutiveBelow: persisted.consecutiveBelow,
+        seenWindows: persisted.seenWindows,
+        counters,
+      });
+    }
+  }
+
+  /** Load durable state exactly once per process. Safe to call on every request. */
+  async hydrate(): Promise<void> {
+    if (!this.hydration) {
+      this.hydration = (async () => {
+        const states = await this.store.loadDegradationState();
+        this.restore(states);
+      })().catch(() => {
+        // A detector that cannot read its history is still a working detector; it
+        // just has to warm up again. Failing the ingest path over it would be worse.
+        this.hydration = null;
+      });
+    }
+    return this.hydration;
+  }
+
+  /** Write the current state back. Called on the window cadence, not per attempt. */
+  async persist(): Promise<void> {
+    await this.store.saveDegradationState(this.snapshot());
   }
 
   record(e: PaymentEvent, failed: boolean): void {
@@ -251,4 +327,20 @@ const globalDetector = globalThis as unknown as { recoverOsDegradation?: Degrada
 
 export function getDegradationDetector(store: RecoveryStore): DegradationDetector {
   return globalDetector.recoverOsDegradation ?? (globalDetector.recoverOsDegradation = new DegradationDetector(store));
+}
+
+/**
+ * The same singleton, with its durable state loaded. Every caller that is allowed to
+ * await should use this one; the synchronous accessor exists for read-only views
+ * that must not block a render.
+ */
+export async function getHydratedDegradationDetector(store: RecoveryStore): Promise<DegradationDetector> {
+  const detector = getDegradationDetector(store);
+  await detector.hydrate();
+  return detector;
+}
+
+/** Test seam. A detector held on globalThis outlives a test file otherwise. */
+export function resetDegradationDetector(): void {
+  globalDetector.recoverOsDegradation = undefined;
 }

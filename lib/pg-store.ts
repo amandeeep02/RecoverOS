@@ -2,7 +2,15 @@ import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
 import type { AuditEvent, CustomerProfile, CustomerResponse, ExecutionResult, RecoveryEpisode } from "@/lib/domain";
 import type { PromiseToPay } from "@/lib/voice";
-import { RecoveryStore } from "@/lib/memory-store";
+import {
+  CONTACT_ACTIONS,
+  DELIVERED_EXECUTION_STATUSES,
+  MAX_PROCESSING_ATTEMPTS,
+  RecoveryStore,
+  type EpisodeProcessing,
+  type PersistedDegradationState,
+  type ProcessingState,
+} from "@/lib/memory-store";
 
 // THE schema. `schema.sql` used to sit beside this declaring eight tables to this
 // constant's six, and only this one was ever executed — so the file a reader would
@@ -34,11 +42,38 @@ CREATE TABLE IF NOT EXISTS episode (
   reminder_count          INTEGER NOT NULL DEFAULT 0,
   voice_call_count        INTEGER NOT NULL DEFAULT 0,
   created_at_ms           BIGINT NOT NULL,
-  updated_at_ms           BIGINT NOT NULL
+  updated_at_ms           BIGINT NOT NULL,
+  processing_state        TEXT NOT NULL DEFAULT 'DONE',
+  claimed_at_ms           BIGINT,
+  processing_attempts     INTEGER NOT NULL DEFAULT 0,
+  drain_due_at_ms         BIGINT
 );
+-- A table created by an earlier deploy predates the four columns above. Adding them
+-- here rather than in a migration folder keeps the promise this constant makes: it
+-- is the whole schema, and running it against any prior version produces the current
+-- one. All four are nullable or defaulted, so the add is not a rewrite.
+ALTER TABLE episode ADD COLUMN IF NOT EXISTS processing_state    TEXT NOT NULL DEFAULT 'DONE';
+ALTER TABLE episode ADD COLUMN IF NOT EXISTS claimed_at_ms       BIGINT;
+ALTER TABLE episode ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE episode ADD COLUMN IF NOT EXISTS drain_due_at_ms     BIGINT;
+
 CREATE INDEX IF NOT EXISTS idx_episode_status ON episode(status);
 CREATE INDEX IF NOT EXISTS idx_episode_phone ON episode ((profile_json->>'phone'));
 CREATE INDEX IF NOT EXISTS idx_episode_execution_ref ON episode ((execution_json->>'externalReference'));
+-- Contact fatigue asks "how many times have we reached THIS customer lately". Without
+-- this the question was answered by reading the whole table into Node and
+-- deserialising seven JSONB columns per row on every payment.failed.
+CREATE INDEX IF NOT EXISTS idx_episode_contact_history
+  ON episode ((event_json->>'merchantId'), customer_id, created_at_ms DESC);
+-- The work queue. Partial, so it holds only the rows a worker can claim rather than
+-- one entry per episode ever ingested.
+CREATE INDEX IF NOT EXISTS idx_episode_processing
+  ON episode (processing_state, created_at_ms)
+  WHERE processing_state <> 'DONE';
+-- Held episodes waiting for their jittered requeue.
+CREATE INDEX IF NOT EXISTS idx_episode_drain_due
+  ON episode (drain_due_at_ms)
+  WHERE drain_due_at_ms IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS customer_profile (
   merchant_id   TEXT NOT NULL,
@@ -84,7 +119,20 @@ CREATE TABLE IF NOT EXISTS promise_to_pay (
   call_id               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_promise_episode ON promise_to_pay(episode_id);
+
+-- The issuer-degradation detector's memory. The EWMA baseline, the open window and
+-- the hysteresis counter are state, not cache: a process that loses them re-arms an
+-- outage that already ended, and two instances behind a load balancer hold two
+-- different baselines for the same issuer.
+CREATE TABLE IF NOT EXISTS degradation_state (
+  key_string    TEXT PRIMARY KEY,
+  state_json    JSONB NOT NULL,
+  updated_at_ms BIGINT NOT NULL
+);
 `;
+
+/** Exported so the schema can be asserted on without a live database. */
+export const RECOVEROS_SCHEMA = SCHEMA;
 
 interface EpisodeRow extends Record<string, unknown> {
   id: string;
@@ -117,9 +165,14 @@ export class PostgresRecoveryStore extends RecoveryStore {
   private readonly pool: Pool;
   private ready: Promise<void>;
 
-  constructor(connectionString: string) {
+  /**
+   * `pool` is injectable so the SQL this class emits can be asserted on without a
+   * live Postgres. The queries below are the whole point of the class; a test that
+   * cannot read them can only check that the in-memory adapter still works.
+   */
+  constructor(connectionString: string, pool?: Pool) {
     super();
-    this.pool = new Pool({ connectionString, max: 5 });
+    this.pool = pool ?? new Pool({ connectionString, max: 5 });
     this.ready = this.pool.query(SCHEMA).then(() => undefined);
   }
 
@@ -335,8 +388,120 @@ export class PostgresRecoveryStore extends RecoveryStore {
     return this.saveEpisode({ ...episode, customerResponses: [...episode.customerResponses, response], updatedAt: new Date().toISOString() });
   }
 
+  /**
+   * An indexed `COUNT`, not a table read.
+   *
+   * `executedAt` is compared as text: every writer produces it with
+   * `Date.prototype.toISOString`, so the values are fixed-width UTC and sort
+   * lexicographically in timestamp order. A `::timestamptz` cast would throw on one
+   * malformed row and take the webhook path down with it; this cannot.
+   */
+  override async countContactsSince(merchantId: string, customerId: string, sinceMs: number, excludeEpisodeId?: string): Promise<number> {
+    const result = await this.q<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM episode
+        WHERE event_json->>'merchantId' = $1
+          AND customer_id = $2
+          AND ($4::text IS NULL OR id <> $4)
+          AND execution_json->>'status' = ANY($5::text[])
+          AND COALESCE(policy_decision_json->>'allowedAction', proposal_json->>'action') = ANY($6::text[])
+          AND execution_json->>'executedAt' >= $3`,
+      [merchantId, customerId, new Date(sinceMs).toISOString(), excludeEpisodeId ?? null, [...DELIVERED_EXECUTION_STATUSES], [...CONTACT_ACTIONS]],
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  }
+
+  override async listEpisodesByStatus(status: RecoveryEpisode["status"], limit = 1_000): Promise<RecoveryEpisode[]> {
+    const result = await this.q(
+      `SELECT ${PostgresRecoveryStore.EPISODE_COLUMNS} FROM episode WHERE status = $1 ORDER BY created_at_ms DESC LIMIT $2`,
+      [status, limit],
+    );
+    return result.rows.map((row) => PostgresRecoveryStore.rowToEpisode(row as EpisodeRow));
+  }
+
+  override async markEpisodeQueued(episodeId: string): Promise<void> {
+    await this.q(`UPDATE episode SET processing_state = 'PENDING', claimed_at_ms = NULL WHERE id = $1 AND processing_state <> 'PROCESSING'`, [episodeId]);
+  }
+
+  /**
+   * The durable claim. `FOR UPDATE SKIP LOCKED` is what lets two instances share the
+   * queue without a broker: each takes a different row and neither blocks. A claim
+   * older than `claimTimeoutMs` is abandoned — that is the crash-recovery path, and
+   * the reason a redeploy mid-episode does not orphan the work.
+   */
+  override async claimEpisodeForProcessing(nowMs: number, claimTimeoutMs: number, maxAttempts = MAX_PROCESSING_ATTEMPTS): Promise<RecoveryEpisode | undefined> {
+    const result = await this.q(
+      `UPDATE episode SET processing_state = 'PROCESSING', claimed_at_ms = $1, processing_attempts = processing_attempts + 1
+        WHERE id = (
+          SELECT id FROM episode
+           WHERE processing_attempts < $3
+             AND (processing_state = 'PENDING' OR (processing_state = 'PROCESSING' AND claimed_at_ms IS NOT NULL AND claimed_at_ms <= $2))
+           ORDER BY created_at_ms
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING ${PostgresRecoveryStore.EPISODE_COLUMNS}`,
+      [nowMs, nowMs - claimTimeoutMs, maxAttempts],
+    );
+    return result.rows[0] ? PostgresRecoveryStore.rowToEpisode(result.rows[0] as EpisodeRow) : undefined;
+  }
+
+  override async completeEpisodeProcessing(episodeId: string, state: Extract<ProcessingState, "DONE" | "FAILED">): Promise<void> {
+    await this.q(`UPDATE episode SET processing_state = $2, claimed_at_ms = NULL WHERE id = $1`, [episodeId, state]);
+  }
+
+  override async getEpisodeProcessing(episodeId: string): Promise<EpisodeProcessing | undefined> {
+    const result = await this.q<{ processing_state: ProcessingState; claimed_at_ms: string | null; processing_attempts: number; drain_due_at_ms: string | null }>(
+      `SELECT processing_state, claimed_at_ms, processing_attempts, drain_due_at_ms FROM episode WHERE id = $1`,
+      [episodeId],
+    );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    return {
+      state: row.processing_state,
+      claimedAtMs: row.claimed_at_ms === null ? null : Number(row.claimed_at_ms),
+      attempts: Number(row.processing_attempts),
+      drainDueAtMs: row.drain_due_at_ms === null ? null : Number(row.drain_due_at_ms),
+    };
+  }
+
+  override async scheduleEpisodeDrain(episodeId: string, dueAtMs: number): Promise<void> {
+    await this.q(`UPDATE episode SET drain_due_at_ms = $2 WHERE id = $1`, [episodeId, dueAtMs]);
+  }
+
+  /** Claim and clear in one statement, so exactly one instance drains each episode. */
+  override async claimDueDrains(nowMs: number, limit = 200): Promise<string[]> {
+    const result = await this.q<{ id: string }>(
+      `UPDATE episode SET drain_due_at_ms = NULL
+        WHERE id IN (
+          SELECT id FROM episode
+           WHERE drain_due_at_ms IS NOT NULL AND drain_due_at_ms <= $1 AND status = 'HELD_DEGRADED'
+           ORDER BY drain_due_at_ms
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id`,
+      [nowMs, limit],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
+  override async saveDegradationState(states: ReadonlyArray<PersistedDegradationState>): Promise<void> {
+    for (const state of states) {
+      await this.q(
+        `INSERT INTO degradation_state (key_string, state_json, updated_at_ms) VALUES ($1, $2, $3)
+         ON CONFLICT (key_string) DO UPDATE SET state_json = EXCLUDED.state_json, updated_at_ms = EXCLUDED.updated_at_ms`,
+        [state.keyString, JSON.stringify(state), state.updatedAtMs],
+      );
+    }
+  }
+
+  override async loadDegradationState(): Promise<PersistedDegradationState[]> {
+    const result = await this.q<{ state_json: PersistedDegradationState }>(`SELECT state_json FROM degradation_state`);
+    return result.rows.map((row) => row.state_json);
+  }
+
   override async reset() {
     await this.ready;
-    await this.pool.query(`TRUNCATE episode, customer_profile, audit_event, execution_log, promise_to_pay, ingested_webhook`);
+    await this.pool.query(`TRUNCATE episode, customer_profile, audit_event, execution_log, promise_to_pay, ingested_webhook, degradation_state`);
   }
 }

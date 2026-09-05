@@ -28,6 +28,8 @@ function parseArgs() {
     resamples: Number(config.resamples ?? 10_000),
     sutva: (config.sutva ?? "1") !== "0",
     out: config.out ?? "",
+    noWrite: "no-write" in config,
+    force: "force" in config,
   };
 }
 
@@ -475,7 +477,7 @@ function generateResultsMd(report: EvalReport): string {
 }
 
 async function main() {
-  const { episodes, seeds, holdout, resamples, sutva, out } = parseArgs();
+  const { episodes, seeds, holdout, resamples, sutva, out, noWrite, force } = parseArgs();
   const policy = defaultMerchantPolicy("merchant_eval");
   policy.holdoutPct = holdout;
 
@@ -530,12 +532,27 @@ async function main() {
 
   const md = generateResultsMd(report);
   const mdPath = out ? resolve(process.cwd(), out) : resolve(process.cwd(), "RESULTS.md");
-  writeFileSync(mdPath, md);
-  console.log(`Written ${mdPath}`);
-
-  if (out) {
-    writeFileSync(resolve(process.cwd(), "RESULTS.md"), md);
+  // A partial run must not silently replace the committed full-scale report. This
+  // already happened once: a `--episodes 5000 --seeds 1,2` verification overwrote the
+  // 50,000 x 20 artifact, and only a `git checkout` recovered it. Writing RESULTS.md
+  // is now opt-out, and refuses by default when the run is smaller than what is there.
+  const FULL_EPISODES = 50_000, FULL_SEEDS = 20;
+  const isFullScale = episodes >= FULL_EPISODES && seeds.length >= FULL_SEEDS;
+  if (noWrite) {
+    console.log("--no-write: RESULTS.md left untouched.");
+  } else if (!isFullScale && !force) {
+    console.log(
+      `Refusing to overwrite ${mdPath}: this run is ${episodes.toLocaleString("en-IN")} x ${seeds.length}, ` +
+      `smaller than the ${FULL_EPISODES.toLocaleString("en-IN")} x ${FULL_SEEDS} report on disk.\n` +
+      "Pass --force to replace it anyway, or --no-write to silence this.",
+    );
+  } else {
+    writeFileSync(mdPath, md);
+    console.log(`Written ${mdPath}`);
   }
+  // The previous version had a second, UNCONDITIONAL write to RESULTS.md here, so
+  // `--out somewhere-else.md` still replaced the committed report. That is how a
+  // 2-seed run came to overwrite the 50,000 x 20 artifact.
 }
 
 main().catch((err) => {

@@ -18,7 +18,7 @@ import { executeApprovedAction } from "@/lib/razorpay";
 import { executeVoiceCall } from "@/lib/voice";
 import { transitionEpisode } from "@/lib/state-machine";
 import { RecoveryStore } from "@/lib/store";
-import { DEGRADATION_CONFIG, DegradationDetector, getDegradationDetector, keyString, type DegradationWindow } from "@/lib/degradation";
+import { DEGRADATION_CONFIG, DegradationDetector, getDegradationDetector, getHydratedDegradationDetector, keyString, type DegradationWindow } from "@/lib/degradation";
 import { realtimeServer } from "@/lib/realtime";
 import { DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID } from "@/lib/compliance";
 
@@ -35,7 +35,6 @@ export function defaultMerchantPolicy(merchantId: string): MerchantPolicy {
 
 /** Same window the churn model's fatigue term assumes patience recovers over. */
 const CONTACT_FATIGUE_WINDOW_MS = 90 * 86_400_000;
-const FATIGUE_CONTACT_ACTIONS = new Set(["REMINDER", "PAYMENT_LINK", "VOICE_CALL"]);
 
 /**
  * How many times we have actually reached this customer inside the fatigue window.
@@ -46,10 +45,13 @@ const FATIGUE_CONTACT_ACTIONS = new Set(["REMINDER", "PAYMENT_LINK", "VOICE_CALL
  * Silent retries are excluded — a customer cannot get tired of something they never
  * saw — which is the same rule the evaluation harness applies.
  *
- * Cost note for whoever productionises this: `listEpisodes()` is the only read the
- * store interface offers, so this is O(all episodes) per failure. It wants a
- * `countContactsSince(merchantId, customerId, since)` on `RecoveryStore`; that file
- * is outside this change.
+ * This used to read `listEpisodes()` and filter in Node: every `payment.failed`
+ * pulled the whole episode table across the wire, deserialised seven JSONB columns
+ * per row and threw away all but a handful. At merchant volume that is the webhook
+ * path's dominant cost and it grows without bound. The predicate is narrow and
+ * indexable, so the store answers it — `countContactsSince` is an indexed COUNT in
+ * Postgres and a no-copy scan in memory, and the rule itself now has exactly one
+ * definition (`CONTACT_ACTIONS` in `lib/memory-store.ts`) instead of two.
  */
 async function priorContactCount(
   recoveryStore: RecoveryStore,
@@ -57,21 +59,7 @@ async function priorContactCount(
   nowMs: number,
   excludeEpisodeId: string,
 ): Promise<number> {
-  const episodes = await recoveryStore.listEpisodes();
-  let n = 0;
-  for (const episode of episodes) {
-    if (episode.id === excludeEpisodeId) continue;
-    if (episode.event.customerId !== event.customerId) continue;
-    if (episode.event.merchantId !== event.merchantId) continue;
-    const execution = episode.execution;
-    if (!execution || (execution.status !== "EXECUTED" && execution.status !== "SIMULATED")) continue;
-    const action = episode.policyDecision?.allowedAction ?? episode.proposal?.action ?? null;
-    if (!action || !FATIGUE_CONTACT_ACTIONS.has(action)) continue;
-    const at = Date.parse(execution.executedAt);
-    if (Number.isNaN(at) || nowMs - at > CONTACT_FATIGUE_WINDOW_MS) continue;
-    n += 1;
-  }
-  return n;
+  return recoveryStore.countContactsSince(event.merchantId, event.customerId, nowMs - CONTACT_FATIGUE_WINDOW_MS, excludeEpisodeId);
 }
 
 export function fallbackProfile(event: PaymentEvent): CustomerProfile {
@@ -99,13 +87,37 @@ export function fallbackProfile(event: PaymentEvent): CustomerProfile {
   };
 }
 
-export async function processPaymentFailure(
+/**
+ * Statuses that mean the episode has already left the pipeline. A re-claimed
+ * episode in one of these is finished work, not work to redo.
+ */
+const SETTLED_STATUSES: ReadonlySet<RecoveryEpisode["status"]> = new Set([
+  "PENDING", "PROMISED", "RECOVERED", "FAILED", "EXPIRED", "ESCALATED", "STOPPED", "SUPPRESSED", "HELD_OUT", "HELD_DEGRADED",
+]);
+
+/** Move forward, or stay put if we are already there. The difference matters only on
+ *  a resumed episode: a worker that died between two saves comes back to a status it
+ *  has already reached, and `transitionEpisode` rightly refuses X -> X. */
+function advance(episode: RecoveryEpisode, status: RecoveryEpisode["status"], clock: Clock): RecoveryEpisode {
+  return episode.status === status ? episode : transitionEpisode(episode, status, clock);
+}
+
+/**
+ * INGEST. Everything that must happen inside Razorpay's delivery deadline, and
+ * nothing else: dedupe on `event_id`, resolve the profile, persist a DETECTED
+ * episode, write the audit head.
+ *
+ * No model call, no scoring, no HTTP to anyone. The webhook handler used to run all
+ * of that — Groq classification, the policy engine and a live `POST /v1/payment_links`
+ * — before it answered. Razorpay's timeout is seconds; a slow issuer or a slow LLM
+ * turns a 202 into a redelivery, redeliveries into a backlog, and a backlog into a
+ * disabled endpoint. The work is durable the moment this returns; a worker does the
+ * rest.
+ */
+export async function ingestEvent(
   event: PaymentEvent,
   recoveryStore: RecoveryStore,
-  suppliedPolicy?: MerchantPolicy,
   clock: Clock = systemClock(),
-  rng: Rng = mulberry32(1),
-  degradationDetector?: DegradationDetector,
 ): Promise<{ episode: RecoveryEpisode; duplicate: boolean }> {
   const duplicate = await recoveryStore.getEpisodeByWebhook(event.eventId);
   if (duplicate) return { episode: duplicate, duplicate: true };
@@ -122,8 +134,7 @@ export async function processPaymentFailure(
   const previousInterventionCount = await priorContactCount(recoveryStore, event, clock.now(), episodeId);
   const profile = { ...baseProfile, previousInterventionCount, currentFailureEpisodeId: episodeId };
   await recoveryStore.saveProfile(profile);
-  const policy = suppliedPolicy ?? defaultMerchantPolicy(event.merchantId);
-  let episode: RecoveryEpisode = {
+  const episode: RecoveryEpisode = {
     id: episodeId,
     event,
     profile,
@@ -145,84 +156,133 @@ export async function processPaymentFailure(
   await recoveryStore.saveEpisode(episode);
   await audit(recoveryStore, episode, "INGESTED", { event, idempotency: "new" }, clock);
   realtimeServer.emit({ type: "episode.created", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise } });
+  return { episode, duplicate: false };
+}
 
-  // Async so the long-tail LLM classifier can run. Safe unconditionally: with no
-  // API key configured it returns exactly what the synchronous `diagnose` returns,
-  // and structured failure codes never consult the model at all.
-  const diagnosis = await diagnoseAsync(event);
-  episode = transitionEpisode(episode, "DIAGNOSED", clock);
-  episode = { ...episode, diagnosis };
-  await recoveryStore.saveEpisode(episode);
-  await audit(recoveryStore, episode, "DIAGNOSED", diagnosis, clock);
-  realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise } });
+/**
+ * PROCESS. Diagnosis through execution, on an episode that is already durable.
+ *
+ * Every stage is guarded by the artefact it produces, so a worker that is killed
+ * mid-episode and whose claim later goes stale resumes at the stage it reached
+ * instead of redoing — or re-sending — the ones it finished. The executor's
+ * idempotency key is the second line of that defence.
+ */
+export async function runRecoveryPipeline(
+  input: RecoveryEpisode,
+  recoveryStore: RecoveryStore,
+  suppliedPolicy?: MerchantPolicy,
+  clock: Clock = systemClock(),
+  degradationDetector?: DegradationDetector,
+): Promise<RecoveryEpisode> {
+  if (SETTLED_STATUSES.has(input.status)) return input;
+  let episode = input;
+  const event = episode.event;
+  const policy = suppliedPolicy ?? defaultMerchantPolicy(event.merchantId);
+  const profile = episode.profile;
 
-  // `bestAction` scores every feasible action and returns the winner WITH its EIR
-  // and the full candidate list. Calling the back-compatible `proposalFor` wrapper
-  // and then recomputing the EIR for `proposal.action` loses the one case that
-  // matters: when the chooser returns WAIT because contacting a dormant subscriber
-  // would destroy more residual value than the recovery is worth, it carries the
-  // SUPPRESSED candidate's economics on `eir`. Recomputing gives a zeroed WAIT
-  // score, the policy's suppression gate never fires, and the Protected Ledger
-  // silently reports nothing while appearing to work.
-  const choice = bestAction(event, diagnosis, profile, policy, {
-    automatedAttemptCount: episode.automatedAttemptCount,
-    reminderCount: episode.reminderCount,
-    voiceCallCount: episode.voiceCallCount,
-  });
-  const proposal = choice.proposal;
-  const eir = choice.eir;
-  // Probabilities are reported for the action the EIR was computed on, so the
-  // numbers on screen always describe the same decision.
-  const prediction = scoreRecovery(event, profile, diagnosis, eir.action);
-  episode = transitionEpisode(episode, "SCORED", clock);
-  episode = { ...episode, prediction, eir };
-  await recoveryStore.saveEpisode(episode);
-  await audit(recoveryStore, episode, "SCORED", { prediction, eir, candidates: choice.candidates }, clock);
-  realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise } });
+  if (!episode.diagnosis) {
+    // Async so the long-tail LLM classifier can run. Safe unconditionally: with no
+    // API key configured it returns exactly what the synchronous `diagnose` returns,
+    // and structured failure codes never consult the model at all.
+    const diagnosis = await diagnoseAsync(event);
+    episode = advance(episode, "DIAGNOSED", clock);
+    episode = { ...episode, diagnosis };
+    await recoveryStore.saveEpisode(episode);
+    await audit(recoveryStore, episode, "DIAGNOSED", diagnosis, clock);
+    realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise } });
+  }
+  const diagnosis = episode.diagnosis!;
 
-  episode = transitionEpisode(episode, "PROPOSED", clock);
-  episode = { ...episode, proposal };
-  await recoveryStore.saveEpisode(episode);
-  await audit(recoveryStore, episode, "PROPOSED", { ...proposal, candidates: choice.candidates }, clock);
-  realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise, action: proposal.action } });
+  if (!episode.eir || !episode.prediction || !episode.proposal) {
+    // `bestAction` scores every feasible action and returns the winner WITH its EIR
+    // and the full candidate list. Calling the back-compatible `proposalFor` wrapper
+    // and then recomputing the EIR for `proposal.action` loses the one case that
+    // matters: when the chooser returns WAIT because contacting a dormant subscriber
+    // would destroy more residual value than the recovery is worth, it carries the
+    // SUPPRESSED candidate's economics on `eir`. Recomputing gives a zeroed WAIT
+    // score, the policy's suppression gate never fires, and the Protected Ledger
+    // silently reports nothing while appearing to work.
+    const choice = bestAction(event, diagnosis, profile, policy, {
+      automatedAttemptCount: episode.automatedAttemptCount,
+      reminderCount: episode.reminderCount,
+      voiceCallCount: episode.voiceCallCount,
+    });
+    const proposal = choice.proposal;
+    const eir = choice.eir;
+    // Probabilities are reported for the action the EIR was computed on, so the
+    // numbers on screen always describe the same decision.
+    const prediction = scoreRecovery(event, profile, diagnosis, eir.action);
+    episode = advance(episode, "SCORED", clock);
+    episode = { ...episode, prediction, eir };
+    await recoveryStore.saveEpisode(episode);
+    await audit(recoveryStore, episode, "SCORED", { prediction, eir, candidates: choice.candidates }, clock);
+    realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise } });
 
-  const policyDecision = evaluatePolicy({
-    event,
-    profile,
-    proposal,
-    eir,
-    policy,
-    automatedAttemptCount: episode.automatedAttemptCount,
-    reminderCount: episode.reminderCount,
-    voiceCallCount: episode.voiceCallCount,
-    diagnosisConfidence: diagnosis.confidence,
-    // Turns the regulatory gate ON. Without a timestamp the whole compliance
-    // block in lib/policy.ts is inert — which it was, in production as well as
-    // in the eval, while the README claimed otherwise.
-    nowIso: new Date(clock.now()).toISOString(),
-    // The gate can only refuse if nobody tells it what the merchant has configured.
-    // Absent fields still fail closed — this supplies facts, it does not assume them.
-    complianceContext: {
-      dltTemplateId: policy.dltTemplateId ?? null,
-      whatsappOptedIn: profile.consentValid && !profile.optedOut,
-      lastCustomerMessageAtIso: episode.customerResponses.at(-1)?.receivedAt ?? null,
-      whatsappTemplateId: DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID,
-      preDebitNotificationSentAtIso: policy.preDebitNotificationByPlatform
-        ? new Date(clock.now() - 25 * 60 * 60 * 1000).toISOString()
-        : null,
-      afaCompleted: policy.preDebitNotificationByPlatform,
-    },
-    degradationWindowId: null,
-    episodeId: episode.id,
-    degradationDetector,
-  });
-  episode = transitionEpisode(episode, "POLICY_CHECK", clock);
-  episode = { ...episode, policyDecision };
-  await recoveryStore.saveEpisode(episode);
-  await audit(recoveryStore, episode, "POLICY", policyDecision, clock);
-  realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise, action: policyDecision.allowedAction ?? undefined } });
+    episode = advance(episode, "PROPOSED", clock);
+    episode = { ...episode, proposal };
+    await recoveryStore.saveEpisode(episode);
+    await audit(recoveryStore, episode, "PROPOSED", { ...proposal, candidates: choice.candidates }, clock);
+    realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise, action: proposal.action } });
+  }
 
-  return { episode: await applyPolicyDecision(episode, recoveryStore, clock), duplicate: false };
+  if (!episode.policyDecision) {
+    const policyDecision = evaluatePolicy({
+      event,
+      profile,
+      proposal: episode.proposal!,
+      eir: episode.eir!,
+      policy,
+      automatedAttemptCount: episode.automatedAttemptCount,
+      reminderCount: episode.reminderCount,
+      voiceCallCount: episode.voiceCallCount,
+      diagnosisConfidence: diagnosis.confidence,
+      // Turns the regulatory gate ON. Without a timestamp the whole compliance
+      // block in lib/policy.ts is inert — which it was, in production as well as
+      // in the eval, while the README claimed otherwise.
+      nowIso: new Date(clock.now()).toISOString(),
+      // The gate can only refuse if nobody tells it what the merchant has configured.
+      // Absent fields still fail closed — this supplies facts, it does not assume them.
+      complianceContext: {
+        dltTemplateId: policy.dltTemplateId ?? null,
+        whatsappOptedIn: profile.consentValid && !profile.optedOut,
+        lastCustomerMessageAtIso: episode.customerResponses.at(-1)?.receivedAt ?? null,
+        whatsappTemplateId: DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID,
+        preDebitNotificationSentAtIso: policy.preDebitNotificationByPlatform
+          ? new Date(clock.now() - 25 * 60 * 60 * 1000).toISOString()
+          : null,
+        afaCompleted: policy.preDebitNotificationByPlatform,
+      },
+      degradationWindowId: null,
+      episodeId: episode.id,
+      degradationDetector,
+    });
+    episode = advance(episode, "POLICY_CHECK", clock);
+    episode = { ...episode, policyDecision };
+    await recoveryStore.saveEpisode(episode);
+    await audit(recoveryStore, episode, "POLICY", policyDecision, clock);
+    realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise, action: policyDecision.allowedAction ?? undefined } });
+  }
+
+  return applyPolicyDecision(episode, recoveryStore, clock);
+}
+
+/**
+ * Ingest and process in one call. This is what the tests, the eval harness and the
+ * demo controls want: no queue, no worker, same observable result. The webhook
+ * handler deliberately does NOT use it.
+ */
+export async function processPaymentFailure(
+  event: PaymentEvent,
+  recoveryStore: RecoveryStore,
+  suppliedPolicy?: MerchantPolicy,
+  clock: Clock = systemClock(),
+  rng: Rng = mulberry32(1),
+  degradationDetector?: DegradationDetector,
+): Promise<{ episode: RecoveryEpisode; duplicate: boolean }> {
+  const ingested = await ingestEvent(event, recoveryStore, clock);
+  if (ingested.duplicate) return ingested;
+  const settled = await runRecoveryPipeline(ingested.episode, recoveryStore, suppliedPolicy, clock, degradationDetector);
+  return { episode: settled, duplicate: false };
 }
 
 /**
@@ -262,7 +322,7 @@ async function applyPolicyDecision(
     return await markTerminal(episode, recoveryStore, "ESCALATED", "safety_fallback", clock);
   }
 
-  episode = transitionEpisode(episode, "EXECUTING", clock);
+  episode = advance(episode, "EXECUTING", clock);
   await recoveryStore.saveEpisode(episode);
   realtimeServer.emit({ type: "episode.updated", episode: { id: episode.id, status: episode.status, customerId: episode.event.customerId, amountPaise: episode.event.amountPaise, action: policyDecision.allowedAction ?? undefined } });
 
@@ -422,6 +482,8 @@ const globalPipeline = globalThis as unknown as {
   recoverOsHeldPolicies?: Map<string, MerchantPolicy>;
   recoverOsDegradationCadence?: ReturnType<typeof setInterval>;
   recoverOsDrainTimers?: Map<string, ReturnType<typeof setTimeout>>;
+  recoverOsProcessingWorker?: ReturnType<typeof setInterval>;
+  recoverOsRecovery?: Promise<void>;
 };
 const heldPolicies = globalPipeline.recoverOsHeldPolicies ?? (globalPipeline.recoverOsHeldPolicies = new Map());
 const drainTimers = globalPipeline.recoverOsDrainTimers ?? (globalPipeline.recoverOsDrainTimers = new Map());
@@ -431,9 +493,13 @@ const drainTimers = globalPipeline.recoverOsDrainTimers ?? (globalPipeline.recov
  *
  * `processPaymentFailure` takes the detector as an optional argument and no caller
  * ever supplied one, which made `HELD_DEGRADED` unreachable outside a script. This
- * wrapper is what the webhook and the demo controls call: every ingested event is
- * recorded into the process-wide detector before the policy sees it, and the same
- * detector instance is handed to the policy gate.
+ * wrapper supplies it: every ingested event is recorded into the process-wide
+ * detector before the policy sees it, and the same detector instance is handed to
+ * the policy gate.
+ *
+ * Ingest and processing happen in one call here, which is what the demo controls and
+ * the seeded dashboard want. The Razorpay webhook uses `ingestPaymentFailureQueued`
+ * instead — it cannot afford to run the pipeline before answering.
  */
 export async function ingestPaymentFailure(
   event: PaymentEvent,
@@ -481,7 +547,7 @@ export async function tickDegradation(
   recoveryStore: RecoveryStore,
   clock: Clock = systemClock(),
 ): Promise<DegradationTickResult> {
-  const detector = getDegradationDetector(recoveryStore);
+  const detector = await getHydratedDegradationDetector(recoveryStore);
   const { opened, closed } = detector.tick();
 
   for (const window of opened) {
@@ -510,30 +576,65 @@ export async function tickDegradation(
     });
   }
 
+  // The window state is the detector's memory, and this is the only moment it
+  // changes. Writing it here costs one round trip per 15 minutes and is the
+  // difference between a deploy resuming an outage and a deploy forgetting it.
+  await detector.persist().catch(() => {});
+
   return { opened, closed, drainScheduled };
 }
 
+/**
+ * Spread the requeues, and write down when each one is due.
+ *
+ * The `setTimeout` is a liveness optimisation, not the schedule. The schedule is
+ * `drain_due_at_ms` on the episode row: a deploy two seconds into a two-minute drain
+ * used to vaporise every pending timer and strand those episodes at HELD_DEGRADED
+ * forever, because nothing else in the system ever looked at them again. Now the
+ * timer is just whichever instance happens to notice first, and `claimDueDrains`
+ * makes sure only one of them acts.
+ */
 async function scheduleDrain(
   window: DegradationWindow,
   recoveryStore: RecoveryStore,
   detector: DegradationDetector,
   clock: Clock,
 ) {
-  const held = (await recoveryStore.listEpisodes()).filter(
-    (episode) => episode.status === "HELD_DEGRADED" && episode.policyDecision?.degradationWindowId === window.id,
+  const held = (await recoveryStore.listEpisodesByStatus("HELD_DEGRADED")).filter(
+    (episode) => episode.policyDecision?.degradationWindowId === window.id,
   );
   const scheduled: DegradationTickResult["drainScheduled"] = [];
   for (const episode of held) {
     const delayMs = detector.drainDelayMs();
     scheduled.push({ episodeId: episode.id, windowId: window.id, delayMs });
+    await recoveryStore.scheduleEpisodeDrain(episode.id, clock.now() + delayMs);
     const timer = setTimeout(() => {
       drainTimers.delete(episode.id);
-      void resumeHeldEpisode(episode.id, recoveryStore, clock).catch(() => {});
+      void processDueDrains(recoveryStore, clock).catch(() => {});
     }, delayMs);
     (timer as unknown as { unref?: () => void }).unref?.();
     drainTimers.set(episode.id, timer);
   }
   return scheduled;
+}
+
+/**
+ * Requeue every held episode whose drain has come due. The claim and the clear are
+ * one statement in the store, so two instances racing here produce one resume each
+ * for different episodes and never two for the same one — a single-writer claim,
+ * which is the right amount of coordination for this. No lock service.
+ */
+export async function processDueDrains(
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+): Promise<string[]> {
+  const due = await recoveryStore.claimDueDrains(clock.now());
+  const drained: string[] = [];
+  for (const episodeId of due) {
+    const settled = await resumeHeldEpisode(episodeId, recoveryStore, clock).catch(() => undefined);
+    if (settled && settled.status !== "HELD_DEGRADED") drained.push(episodeId);
+  }
+  return drained;
 }
 
 /**
@@ -595,4 +696,160 @@ export function startDegradationCadence(
   const timer = setInterval(() => { void tickDegradation(recoveryStore).catch(() => {}); }, intervalMs);
   (timer as unknown as { unref?: () => void }).unref?.();
   globalPipeline.recoverOsDegradationCadence = timer;
+}
+
+// ---------------------------------------------------------------------------
+// The work queue — ingest fast, process out of band
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a claim is honoured before another worker may take the episode.
+ *
+ * Long enough that a slow LLM call plus a slow payment-link create cannot lose the
+ * claim mid-flight; short enough that a killed pod's work is picked up in under a
+ * minute rather than at the next deploy.
+ */
+export const PROCESSING_CLAIM_TIMEOUT_MS = 60_000;
+
+/** How often an idle instance looks for queued work it did not ingest itself. */
+export const PROCESSING_POLL_MS = 1_000;
+
+/**
+ * The webhook's half of the split: verify, persist, enqueue, answer.
+ *
+ * Idempotency on `event_id` is unchanged and still lives in `registerWebhook` — a
+ * redelivery finds the existing episode and enqueues nothing new.
+ */
+export async function ingestPaymentFailureQueued(
+  event: PaymentEvent,
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+): Promise<{ episode: RecoveryEpisode; duplicate: boolean }> {
+  // A `payment.failed` webhook is, by definition, one failed attempt on this key.
+  // Recorded at ingest, not at processing: the detector's denominator is the rail's
+  // traffic, and it must not be skewed by how quickly we happen to drain the queue.
+  const detector = await getHydratedDegradationDetector(recoveryStore);
+  detector.record(event, true);
+
+  const ingested = await ingestEvent(event, recoveryStore, clock);
+  if (ingested.duplicate) return ingested;
+  await recoveryStore.markEpisodeQueued(ingested.episode.id);
+  return ingested;
+}
+
+/**
+ * Claim one queued episode and run it. Returns `undefined` when the queue is empty.
+ *
+ * A throw leaves the claim in place: the episode is not marked DONE, its claim goes
+ * stale after `PROCESSING_CLAIM_TIMEOUT_MS` and another worker retries it, up to the
+ * store's attempt ceiling. Failing loudly and leaving the row claimed is deliberate —
+ * marking it DONE on error would lose the episode silently, which is the failure mode
+ * this whole change exists to remove.
+ */
+export async function processQueuedEpisode(
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+): Promise<RecoveryEpisode | undefined> {
+  const claimed = await recoveryStore.claimEpisodeForProcessing(clock.now(), PROCESSING_CLAIM_TIMEOUT_MS);
+  if (!claimed) return undefined;
+  const detector = await getHydratedDegradationDetector(recoveryStore);
+  const settled = await runRecoveryPipeline(claimed, recoveryStore, heldPolicies.get(claimed.id), clock, detector);
+  if (settled.status === "HELD_DEGRADED") heldPolicies.set(settled.id, heldPolicies.get(claimed.id) ?? defaultMerchantPolicy(settled.event.merchantId));
+  await recoveryStore.completeEpisodeProcessing(claimed.id, "DONE");
+  return settled;
+}
+
+/** Drain up to `max` queued episodes. One failure does not stop the batch. */
+export async function drainProcessingQueue(
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+  max = 25,
+): Promise<RecoveryEpisode[]> {
+  const settled: RecoveryEpisode[] = [];
+  for (let i = 0; i < max; i++) {
+    let episode: RecoveryEpisode | undefined;
+    try {
+      episode = await processQueuedEpisode(recoveryStore, clock);
+    } catch {
+      continue; // claim stays, stale-claim recovery retries it
+    }
+    if (!episode) break;
+    settled.push(episode);
+  }
+  return settled;
+}
+
+/**
+ * What a fresh process must do before it can be trusted with traffic.
+ *
+ * 1. Load the degradation detector's durable state, so an outage that opened before
+ *    the deploy is still open afterwards.
+ * 2. Give every held episode whose window is no longer open a drain time. Without
+ *    this a deploy during an outage strands them at HELD_DEGRADED permanently: the
+ *    only thing that ever released them was a `setTimeout` in the process that died.
+ * 3. Run the drains that are already due, and pick up any episode that was ingested
+ *    but never processed.
+ */
+export async function recoverAfterRestart(
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+): Promise<{ rescheduled: string[]; drained: string[]; processed: number }> {
+  const detector = await getHydratedDegradationDetector(recoveryStore);
+  const openWindowIds = new Set(detector.getAllOpen().map((window) => window.id));
+  const held = await recoveryStore.listEpisodesByStatus("HELD_DEGRADED");
+  const rescheduled: string[] = [];
+  for (const episode of held) {
+    const windowId = episode.policyDecision?.degradationWindowId ?? null;
+    if (windowId && openWindowIds.has(windowId)) continue; // still legitimately held
+    const existing = await recoveryStore.getEpisodeProcessing(episode.id);
+    if (existing?.drainDueAtMs != null) continue; // already scheduled and durable
+    await recoveryStore.scheduleEpisodeDrain(episode.id, clock.now() + detector.drainDelayMs());
+    rescheduled.push(episode.id);
+  }
+  const drained = await processDueDrains(recoveryStore, clock);
+  const processed = (await drainProcessingQueue(recoveryStore, clock)).length;
+  return { rescheduled, drained, processed };
+}
+
+/**
+ * Start the out-of-band workers exactly once per process, and run restart recovery
+ * exactly once. Called by the webhook handler; deliberately lazy, so a process that
+ * never receives traffic never holds a timer.
+ */
+export function ensureBackgroundWorkers(recoveryStore: RecoveryStore, clock: Clock = systemClock()): void {
+  startDegradationCadence(recoveryStore);
+  if (!globalPipeline.recoverOsProcessingWorker) {
+    let running = false;
+    const timer = setInterval(() => {
+      if (running) return; // never let two passes overlap on one instance
+      running = true;
+      void (async () => {
+        try {
+          await drainProcessingQueue(recoveryStore, clock);
+          await processDueDrains(recoveryStore, clock);
+        } catch {
+          // a poll that fails is retried on the next tick
+        } finally {
+          running = false;
+        }
+      })();
+    }, PROCESSING_POLL_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    globalPipeline.recoverOsProcessingWorker = timer;
+  }
+  if (!globalPipeline.recoverOsRecovery) {
+    globalPipeline.recoverOsRecovery = recoverAfterRestart(recoveryStore, clock).then(() => undefined).catch(() => undefined);
+  }
+}
+
+/** Test seam: drop the per-process worker handles so a suite can start clean. */
+export function resetBackgroundWorkers(): void {
+  if (globalPipeline.recoverOsProcessingWorker) clearInterval(globalPipeline.recoverOsProcessingWorker);
+  if (globalPipeline.recoverOsDegradationCadence) clearInterval(globalPipeline.recoverOsDegradationCadence);
+  for (const timer of drainTimers.values()) clearTimeout(timer);
+  drainTimers.clear();
+  heldPolicies.clear();
+  globalPipeline.recoverOsProcessingWorker = undefined;
+  globalPipeline.recoverOsDegradationCadence = undefined;
+  globalPipeline.recoverOsRecovery = undefined;
 }
