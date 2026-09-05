@@ -269,20 +269,7 @@ export async function runRecoveryPipeline(
       // Turns the regulatory gate ON. Without a timestamp the whole compliance
       // block in lib/policy.ts is inert — which it was, in production as well as
       // in the eval, while the README claimed otherwise.
-      nowIso: new Date(clock.now()).toISOString(),
-      // The gate can only refuse if nobody tells it what the merchant has configured.
-      // Absent fields still fail closed — this supplies facts, it does not assume them.
-      complianceConfig: complianceConfigFor(policy),
-    complianceContext: {
-        dltTemplateId: policy.dltTemplateId ?? null,
-        whatsappOptedIn: profile.consentValid && !profile.optedOut,
-        lastCustomerMessageAtIso: episode.customerResponses.at(-1)?.receivedAt ?? null,
-        whatsappTemplateId: DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID,
-        preDebitNotificationSentAtIso: policy.preDebitNotificationByPlatform
-          ? new Date(clock.now() - 25 * 60 * 60 * 1000).toISOString()
-          : null,
-        afaCompleted: policy.preDebitNotificationByPlatform,
-      },
+      ...complianceInputsFor(policy, profile, episode, clock),
       degradationWindowId: null,
       episodeId: episode.id,
       degradationDetector,
@@ -655,6 +642,42 @@ async function scheduleDrain(
  * for different episodes and never two for the same one — a single-writer claim,
  * which is the right amount of coordination for this. No lock service.
  */
+/**
+ * The merchant's regulatory facts, in one place.
+ *
+ * Supplying `nowIso` without this is not a smaller version of the same call — it is a
+ * different one. Every field here fails closed, so a call site that arms the gate and
+ * omits the context refuses the contact for facts the merchant actually has on file.
+ * `resumeHeldEpisode` did exactly that: an episode held through an issuer outage came
+ * back and was refused on `WA_OPT_IN_MISSING` and `WA_OUTSIDE_SERVICE_WINDOW`, because
+ * the release path armed the gate and told it nothing. Nothing about the customer had
+ * changed; only the code path had.
+ *
+ * So the two live together and neither is assembled at a call site. This supplies facts,
+ * it does not assume them — absent fields still fail closed.
+ */
+function complianceInputsFor(
+  policy: MerchantPolicy,
+  profile: CustomerProfile,
+  episode: RecoveryEpisode,
+  clock: Clock,
+): { nowIso: string; complianceConfig: ComplianceConfig; complianceContext: NonNullable<Parameters<typeof evaluatePolicy>[0]["complianceContext"]> } {
+  return {
+    nowIso: new Date(clock.now()).toISOString(),
+    complianceConfig: complianceConfigFor(policy),
+    complianceContext: {
+      dltTemplateId: policy.dltTemplateId ?? null,
+      whatsappOptedIn: profile.consentValid && !profile.optedOut,
+      lastCustomerMessageAtIso: episode.customerResponses.at(-1)?.receivedAt ?? null,
+      whatsappTemplateId: DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID,
+      preDebitNotificationSentAtIso: policy.preDebitNotificationByPlatform
+        ? new Date(clock.now() - 25 * 60 * 60 * 1000).toISOString()
+        : null,
+      afaCompleted: policy.preDebitNotificationByPlatform,
+    },
+  };
+}
+
 export async function processDueDrains(
   recoveryStore: RecoveryStore,
   clock: Clock = systemClock(),
@@ -694,10 +717,9 @@ export async function resumeHeldEpisode(
     reminderCount: existing.reminderCount,
     voiceCallCount: existing.voiceCallCount,
     diagnosisConfidence: existing.diagnosis.confidence,
-    // Turns the regulatory gate ON. Without a timestamp the whole compliance
-    // block in lib/policy.ts is inert — which it was, in production as well as
-    // in the eval, while the README claimed otherwise.
-    nowIso: new Date(clock.now()).toISOString(),
+    // Same gate, same facts as the first evaluation. Arming it with `nowIso` alone
+    // refused every released episode on fail-closed WhatsApp fields.
+    ...complianceInputsFor(policy, existing.profile, existing, clock),
     degradationWindowId: null,
     episodeId: existing.id,
     degradationDetector: detector,

@@ -42,7 +42,7 @@ Reproduce every number above: `npm i && npm run verify`
 
 ```bash
 npm install
-npm test          # 141 tests, no network, no API key required
+npm test          # 142 tests, no network, no API key required
 npm run eval      # 50,000 episodes × 20 seeds → rewrites RESULTS.md
 npm run dev       # http://localhost:3000
 ```

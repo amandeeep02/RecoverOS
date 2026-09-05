@@ -558,6 +558,31 @@ describe("issuer degradation survives a deploy", () => {
     expect(settled?.status).not.toBe("HELD_DEGRADED");
   });
 
+  it("does not refuse a released episode on regulatory facts the merchant has on file", async () => {
+    // The test above asserts the released episode is no longer HELD_DEGRADED. A REJECT
+    // satisfies that too, which is why this path shipped broken: `resumeHeldEpisode`
+    // armed the gate with `nowIso` and passed no complianceContext, so every field
+    // failed closed and the release refused on WA_OPT_IN_MISSING /
+    // WA_OUTSIDE_SERVICE_WINDOW. Nothing about the customer had changed between the
+    // two evaluations — only the code path had.
+    const store = new RecoveryStore();
+    await store.saveProfile(profile());
+    const detector = new DegradationDetector(store);
+    drive(detector, event());
+    const { episode } = await processPaymentFailure(event(), store, policy, undefined, undefined, detector);
+    expect(episode.status).toBe("HELD_DEGRADED");
+
+    resetDegradationDetector();
+    await recoverAfterRestart(store, fixedClock(Date.now()));
+    await processDueDrains(store, fixedClock(Date.now() + DEGRADATION_CONFIG.DRAIN_JITTER_MS + 1));
+
+    const settled = await store.getEpisode(episode.id);
+    const reasons = (settled?.policyDecision?.reasons ?? []).join(",");
+    for (const failClosed of ["WA_OPT_IN_MISSING", "WA_OUTSIDE_SERVICE_WINDOW", "DLT_TEMPLATE_MISSING"]) {
+      expect(reasons).not.toContain(failClosed);
+    }
+  });
+
   it("leaves an episode held when its outage is genuinely still open", async () => {
     const store = new RecoveryStore();
     await store.saveProfile(profile());

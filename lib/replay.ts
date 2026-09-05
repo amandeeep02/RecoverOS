@@ -1,10 +1,13 @@
 import type { PaymentEvent, MerchantPolicy, CustomerProfile, ActionProposal } from "@/lib/domain";
 import { diagnose } from "@/lib/diagnosis";
 import { evaluatePolicy } from "@/lib/policy";
+import { DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID, type ComplianceConfig } from "@/lib/compliance";
 import { bestAction, scoreRecovery, interventionCosts } from "@/lib/scoring";
 import { mulberry32, type Rng } from "@/lib/rng";
 
 export interface ReplayConfig {
+  /** Registry for the merchant's DLT template; omitted means the shipped fail-closed default. */
+  complianceConfig?: ComplianceConfig;
   policy: MerchantPolicy;
   modelVersion: string;
 }
@@ -134,6 +137,25 @@ export function replayBatch(
       reminderCount: 0,
       voiceCallCount: 0,
       diagnosisConfidence: diagnosis.confidence,
+      // Replay must model the policy PRODUCTION runs, not a permissive variant of it.
+      // With the gate off, a replayed counterfactual counts contacts that compliance
+      // would have refused, so every delta the console reports is optimistic by
+      // exactly the amount the regulator would have blocked — on the one screen whose
+      // job is to answer "what would this policy change have done".
+      // The episode's own timestamp is the right clock: quiet hours are evaluated as
+      // they were at the moment the failure actually occurred.
+      nowIso: event.occurredAt,
+      complianceConfig: config.complianceConfig,
+      complianceContext: {
+        dltTemplateId: config.policy.dltTemplateId ?? null,
+        whatsappOptedIn: ep.profile.consentValid && !ep.profile.optedOut,
+        lastCustomerMessageAtIso: null,
+        whatsappTemplateId: DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID,
+        preDebitNotificationSentAtIso: config.policy.preDebitNotificationByPlatform
+          ? new Date(Date.parse(event.occurredAt) - 25 * 60 * 60 * 1000).toISOString()
+          : null,
+        afaCompleted: config.policy.preDebitNotificationByPlatform,
+      },
       degradationWindowId: null,
       episodeId,
     });
