@@ -30,7 +30,7 @@ export function EpisodeRow({ episode, selected, onClick, onOpenVoice }: { episod
   const eirValue = episode.eir?.eirPaise ?? 0;
 
   return (
-    <tr onClick={onClick} className={`episode-row ${statusClass} ${selected ? "selected" : ""}`}>
+    <tr id={`episode-${episode.id}`} onClick={onClick} className={`episode-row ${statusClass} ${selected ? "selected" : ""}`}>
       <td className="col-customer">
         <strong>{episode.event.customerId}</strong>
         <span className="meta">

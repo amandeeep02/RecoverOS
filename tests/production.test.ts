@@ -630,3 +630,52 @@ describe("issuer degradation survives a deploy", () => {
     expect(RECOVEROS_SCHEMA).toMatch(/CREATE TABLE IF NOT EXISTS degradation_state/);
   });
 });
+
+// ===========================================================================
+// Defect — one audit round trip per episode on every dashboard load
+
+describe("batched audit lookup for the dashboard", () => {
+  const auditFor = (episodeId: string, n: number) => ({
+    auditId: `aud_${episodeId}_${n}`, episodeId, eventId: `evt_${episodeId}`, customerId: "cust_a", paymentId: `pay_${episodeId}`,
+    timestamp: new Date(1_700_000_000_000 + n * 1_000).toISOString(), stage: (n === 0 ? "INGESTED" : "POLICY") as "INGESTED" | "POLICY", payload: { n },
+  });
+
+  it("in memory: returns exactly what per-episode getAudit returns, and an empty trail for unknown ids", async () => {
+    const store = new RecoveryStore();
+    await store.appendAudit(auditFor("ep_1", 0));
+    await store.appendAudit(auditFor("ep_1", 1));
+    await store.appendAudit(auditFor("ep_2", 0));
+    const batched = await store.getAuditForEpisodes(["ep_1", "ep_2", "ep_none"]);
+    expect(batched.ep_1).toEqual(await store.getAudit("ep_1"));
+    expect(batched.ep_2).toEqual(await store.getAudit("ep_2"));
+    expect(batched.ep_none).toEqual([]);
+    expect(Object.keys(batched)).toEqual(["ep_1", "ep_2", "ep_none"]);
+  });
+
+  it("in Postgres: one query for any number of episodes, grouped by episode in time order, none for an empty list", async () => {
+    const { pool, store } = recordingStore();
+    pool.rows = [
+      { id: "aud_ep_2_0", episode_id: "ep_2", event_id: "evt_ep_2", customer_id: "cust_a", payment_id: "pay_ep_2", stage: "INGESTED", payload_json: { n: 0 }, at_ms: "1700000000000" },
+      { id: "aud_ep_1_0", episode_id: "ep_1", event_id: "evt_ep_1", customer_id: "cust_a", payment_id: "pay_ep_1", stage: "INGESTED", payload_json: { n: 0 }, at_ms: "1700000000000" },
+      { id: "aud_ep_1_1", episode_id: "ep_1", event_id: "evt_ep_1", customer_id: "cust_a", payment_id: "pay_ep_1", stage: "POLICY", payload_json: { n: 1 }, at_ms: "1700000001000" },
+    ];
+    const batched = await store.getAuditForEpisodes(["ep_1", "ep_2", "ep_none"]);
+    // The first statement on a fresh pool is the one-time schema bootstrap; every read after it counts.
+    const reads = pool.queries.filter((q) => !q.text.includes("CREATE TABLE"));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].text).toMatch(/WHERE episode_id = ANY\(\$1::text\[\]\) ORDER BY at_ms, seq/);
+    expect(reads[0].values).toEqual([["ep_1", "ep_2", "ep_none"]]);
+    // Same-millisecond rows must come back in the order they were written, in both forms.
+    expect(RECOVEROS_SCHEMA).toMatch(/ALTER TABLE audit_event ADD COLUMN IF NOT EXISTS seq BIGSERIAL/);
+    await store.getAudit("ep_1");
+    expect(pool.last().text).toMatch(/WHERE episode_id = \$1 ORDER BY at_ms, seq/);
+    expect(batched.ep_1.map((a) => a.auditId)).toEqual(["aud_ep_1_0", "aud_ep_1_1"]);
+    expect(batched.ep_1[1]).toMatchObject({ stage: "POLICY", payload: { n: 1 }, timestamp: new Date(1_700_000_001_000).toISOString() });
+    expect(batched.ep_2).toHaveLength(1);
+    expect(batched.ep_none).toEqual([]);
+
+    const { pool: emptyPool, store: emptyStore } = recordingStore();
+    expect(await emptyStore.getAuditForEpisodes([])).toEqual({});
+    expect(emptyPool.queries.filter((q) => !q.text.includes("CREATE TABLE"))).toHaveLength(0);
+  });
+});

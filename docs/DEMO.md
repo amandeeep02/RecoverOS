@@ -78,6 +78,46 @@ Signed with the real secret, POSTed to the real `/api/webhooks/razorpay`, `202` 
 milliseconds because diagnosis and execution run in a worker behind a durable claim —
 Razorpay disables endpoints that miss the delivery deadline.
 
+Then click **Customer pays the link**. The demo route reads the `plink_…` id the executor
+actually recorded on that episode, builds a Razorpay-shaped `payment_link.paid` for it,
+signs it with the same secret, and POSTs it to the same `/api/webhooks/razorpay`. The
+episode goes `PENDING → RECOVERED`, the outcome is booked at face value, and the ledger
+updates over the live stream. Click it again: `duplicate: true`, no second transition —
+Razorpay redelivers, and the loop has to be idempotent on both halves.
+
+> "The same endpoint opens the loop and closes it. A paid link settles only the episode
+> that issued it — a signed event naming our episode but a link we never created is
+> acknowledged and dropped, not acted on."
+
+Verified on this tree: `payment.failed` → `202`, real `plink_` created → `payment_link.paid`
+→ `200 RECOVERED` → redelivery `200 duplicate:true` → forged link id `200 ignored`.
+
+### 3b. The phone beat — `/checkout`
+
+A real Razorpay test-mode checkout on our own site. Enter the phone that should ring,
+pay ₹4,999, and fail it on the mock bank page. Checkout's `payment.failed` is reported
+to `/api/checkout/failed`, enriched from Razorpay's payment API (method, issuer,
+network, E.164 contact), shaped and signed like the webhook Razorpay would have sent,
+and posted to the production route. From there nothing is demo-specific: the scorer
+prefers a voice call at that amount with a phone on file, the policy gate approves it,
+Twilio rings the phone, asks why the payment failed, and the spoken answer lands on the
+episode. The dashboard jumps to that episode and shows the transcript the moment it
+arrives; the checkout page shows the same timeline.
+
+> "The customer failed a payment thirty seconds ago and RecoverOS has already asked
+> them why, in their language, and written the answer into the audit trail."
+
+What it needs, and what to say if it does not fire:
+
+- **Between 09:00 and 21:00 IST.** Outside that window the TRAI quiet-hours gate refuses
+  the call and the episode escalates with the citation on screen. That refusal is the
+  compliance beat, so show it rather than apologise for it.
+- **A public URL** for Twilio's callbacks: `ngrok http 3000`, then `PUBLIC_BASE_URL` in
+  `.env.local` and a dev-server restart. Without it the call still happens, but the
+  answer cannot come back.
+- **Twilio trial** calls only its verified number. **ElevenLabs** is optional: with a key
+  the call is in that voice, without it Twilio's Hindi voice reads the same script.
+
 ### 4. The measurement — `RESULTS.md`
 
 | Claim | Figure |

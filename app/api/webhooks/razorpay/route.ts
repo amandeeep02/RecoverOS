@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { normalizeRazorpayEvent, verifyRazorpaySignature, UnsupportedEventError } from "@/lib/normalizer";
-import { drainProcessingQueue, ensureBackgroundWorkers, ingestPaymentFailureQueued } from "@/lib/pipeline";
+import { extractPaymentLinkPaid, normalizeRazorpayEvent, verifyRazorpaySignature, UnsupportedEventError } from "@/lib/normalizer";
+import { drainProcessingQueue, ensureBackgroundWorkers, ingestPaymentFailureQueued, observePaymentLinkPaid } from "@/lib/pipeline";
 import { store } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -23,10 +23,27 @@ export async function POST(request: NextRequest) {
   const verification = verifyRazorpaySignature(rawBody, request.headers.get("x-razorpay-signature"));
   if (!verification.valid) return NextResponse.json({ error: "Invalid webhook signature" }, { status: 401 });
   try {
-    const event = normalizeRazorpayEvent(JSON.parse(rawBody), {
+    const body = JSON.parse(rawBody);
+    const headers = {
       eventId: request.headers.get("x-razorpay-event-id") ?? undefined,
       accountId: request.headers.get("x-razorpay-account-id") ?? undefined,
-    });
+    };
+
+    // The closing half of the loop: a paid link settles the episode that issued it.
+    // Handled before normalisation because it is an outcome, not a failure to ingest.
+    const paid = extractPaymentLinkPaid(body, headers);
+    if (paid) {
+      const settled = await observePaymentLinkPaid(paid, store);
+      if (settled.outcome === "IGNORED") {
+        return NextResponse.json({ ok: true, ignored: "payment_link.paid", reason: settled.reason, episodeId: settled.episode?.id ?? null }, { status: 200 });
+      }
+      return NextResponse.json(
+        { episodeId: settled.episode.id, status: settled.episode.status, duplicate: settled.outcome === "DUPLICATE", closedBy: "payment_link.paid", signature: verification.verification },
+        { status: 200 },
+      );
+    }
+
+    const event = normalizeRazorpayEvent(body, headers);
 
     // Recovers anything a previous process left mid-flight and starts the poller.
     // Once per process, not once per request.

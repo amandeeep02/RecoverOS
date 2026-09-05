@@ -5,6 +5,7 @@ import { store } from "@/lib/store";
 import { fixedClock, systemClock } from "@/lib/clock";
 import { getDegradationDetector, DEGRADATION_CONFIG, keyString } from "@/lib/degradation";
 import { runEval } from "@/lib/eval/harness";
+import { quietHoursDisabled } from "@/lib/compliance";
 import { tInterval } from "@/lib/eval/estimators";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,8 @@ export interface DashboardSnapshot {
   degradation: DegradationView;
   queue: { revenueAtRiskPaise: number; recoveredPaise: number; pendingPaise: number; escalated: number; suppressed: number; held: number };
   policy: MerchantPolicy;
+  /** True when RECOVEROS_DISABLE_QUIET_HOURS=1 is set on this server. */
+  quietHoursDisabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -468,8 +471,7 @@ export function buildDegradationView(episodes: RecoveryEpisode[]): DegradationVi
 export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   await ensureSeeded();
   const episodes = await store.listEpisodes();
-  const audits: Record<string, AuditEvent[]> = {};
-  for (const episode of episodes) audits[episode.id] = await store.getAudit(episode.id);
+  const audits = await store.getAuditForEpisodes(episodes.map((episode) => episode.id));
 
   return {
     episodes: episodes.map(toEpisodeView),
@@ -487,5 +489,6 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
       held: episodes.filter((e) => e.status === "HELD_DEGRADED").length,
     },
     policy: demoPolicy(),
+    quietHoursDisabled: quietHoursDisabled(),
   };
 }

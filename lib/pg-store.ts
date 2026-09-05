@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS audit_event (
   at_ms        BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_episode ON audit_event(episode_id, at_ms);
+-- Insertion order. Several audit rows of one episode can share a millisecond (a fixed
+-- clock, a fast local store), and ORDER BY at_ms alone leaves their order to the sort
+-- algorithm. Backfills existing rows in heap order, which for an append-only table is
+-- the order they were written.
+ALTER TABLE audit_event ADD COLUMN IF NOT EXISTS seq BIGSERIAL;
 
 CREATE TABLE IF NOT EXISTS execution_log (
   id              TEXT PRIMARY KEY,
@@ -161,6 +166,21 @@ interface EpisodeRow extends Record<string, unknown> {
  * interface is the real fix; until then `tests/recovery-engine.test.ts` asserts that
  * every base method is overridden, so the gap fails CI rather than losing data.
  */
+type AuditRow = { id: string; episode_id: string; event_id: string; customer_id: string; payment_id: string; stage: AuditEvent["stage"]; payload_json: Record<string, unknown>; at_ms: string };
+
+function auditFromRow(row: AuditRow): AuditEvent {
+  return {
+    auditId: row.id,
+    episodeId: row.episode_id,
+    eventId: row.event_id,
+    customerId: row.customer_id,
+    paymentId: row.payment_id,
+    timestamp: new Date(Number(row.at_ms)).toISOString(),
+    stage: row.stage,
+    payload: row.payload_json,
+  };
+}
+
 export class PostgresRecoveryStore extends RecoveryStore {
   private readonly pool: Pool;
   private ready: Promise<void>;
@@ -303,20 +323,28 @@ export class PostgresRecoveryStore extends RecoveryStore {
   }
 
   override async getAudit(episodeId: string): Promise<AuditEvent[]> {
-    const result = await this.q<{ id: string; episode_id: string; event_id: string; customer_id: string; payment_id: string; stage: AuditEvent["stage"]; payload_json: Record<string, unknown>; at_ms: string }>(
-      `SELECT id, episode_id, event_id, customer_id, payment_id, stage, payload_json, at_ms FROM audit_event WHERE episode_id = $1 ORDER BY at_ms`,
+    const result = await this.q<AuditRow>(
+      `SELECT id, episode_id, event_id, customer_id, payment_id, stage, payload_json, at_ms FROM audit_event WHERE episode_id = $1 ORDER BY at_ms, seq`,
       [episodeId],
     );
-    return result.rows.map((row) => ({
-      auditId: row.id,
-      episodeId: row.episode_id,
-      eventId: row.event_id,
-      customerId: row.customer_id,
-      paymentId: row.payment_id,
-      timestamp: new Date(Number(row.at_ms)).toISOString(),
-      stage: row.stage,
-      payload: row.payload_json,
-    }));
+    return result.rows.map(auditFromRow);
+  }
+
+  /**
+   * One round trip for the whole dashboard. The per-episode form above, awaited in a
+   * loop, cost one network round trip per episode — ~65 ms each against a remote
+   * Postgres, so the page took as many seconds as it had hundreds of episodes.
+   */
+  override async getAuditForEpisodes(episodeIds: ReadonlyArray<string>): Promise<Record<string, AuditEvent[]>> {
+    const audits: Record<string, AuditEvent[]> = {};
+    for (const id of episodeIds) audits[id] = [];
+    if (episodeIds.length === 0) return audits;
+    const result = await this.q<AuditRow>(
+      `SELECT id, episode_id, event_id, customer_id, payment_id, stage, payload_json, at_ms FROM audit_event WHERE episode_id = ANY($1::text[]) ORDER BY at_ms, seq`,
+      [[...episodeIds]],
+    );
+    for (const row of result.rows) (audits[row.episode_id] ??= []).push(auditFromRow(row));
+    return audits;
   }
 
   override async getExecution(idempotencyKey: string) {

@@ -20,7 +20,8 @@ import { transitionEpisode } from "@/lib/state-machine";
 import { RecoveryStore } from "@/lib/store";
 import { DEGRADATION_CONFIG, DegradationDetector, getDegradationDetector, getHydratedDegradationDetector, keyString, type DegradationWindow } from "@/lib/degradation";
 import { realtimeServer } from "@/lib/realtime";
-import { DEFAULT_COMPLIANCE_CONFIG, DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID, type ComplianceConfig } from "@/lib/compliance";
+import type { PaymentLinkPaid } from "@/lib/normalizer";
+import { DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID, runtimeComplianceConfig, type ComplianceConfig } from "@/lib/compliance";
 
 /**
  * DLT registration is a per-MERCHANT fact, not a global one, so the shipped registry
@@ -34,13 +35,14 @@ import { DEFAULT_COMPLIANCE_CONFIG, DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID, type 
  * two components each correct on their own, disagreeing where they meet.
  */
 function complianceConfigFor(policy: MerchantPolicy): ComplianceConfig {
-  if (!policy.dltTemplateId) return DEFAULT_COMPLIANCE_CONFIG;
+  const base = runtimeComplianceConfig();
+  if (!policy.dltTemplateId) return base;
   return {
-    ...DEFAULT_COMPLIANCE_CONFIG,
+    ...base,
     dlt: {
-      ...DEFAULT_COMPLIANCE_CONFIG.dlt,
+      ...base.dlt,
       templates: {
-        ...DEFAULT_COMPLIANCE_CONFIG.dlt.templates,
+        ...base.dlt.templates,
         [policy.dltTemplateId]: {
           templateId: policy.dltTemplateId,
           header: policy.dltSenderHeader ?? "RCVROS",
@@ -414,6 +416,36 @@ export async function observeOutcome(
     realtimeServer.emit({ type: "ledger.updated", ledger: { incrementalRecoveredPaise: updated.event.amountPaise, protectedPaise: 0, forgonePaise: 0 } });
   }
   return updated;
+}
+
+export type PaymentLinkPaidResult =
+  | { outcome: "RECOVERED"; episode: RecoveryEpisode }
+  | { outcome: "DUPLICATE"; episode: RecoveryEpisode }
+  | { outcome: "IGNORED"; reason: "no_episode" | "link_mismatch" | `terminal_${RecoveryEpisode["status"]}`; episode: RecoveryEpisode | null };
+
+/**
+ * Closes the loop from Razorpay's side. A `payment_link.paid` webhook settles exactly
+ * one episode: the one whose executed link it names. The link id must equal the
+ * episode's recorded `externalReference` — a signed webhook that names an episode but
+ * a different link is not evidence that THIS link was paid, and is dropped.
+ *
+ * Every non-recovering path is IGNORED rather than thrown: the route must answer 200
+ * to a well-formed event it will not act on, or Razorpay redelivers it forever.
+ * Redelivery of a settled episode is a DUPLICATE, not a second transition.
+ */
+export async function observePaymentLinkPaid(
+  paid: PaymentLinkPaid,
+  recoveryStore: RecoveryStore,
+  clock: Clock = systemClock(),
+): Promise<PaymentLinkPaidResult> {
+  const episode = paid.episodeId ? await recoveryStore.getEpisode(paid.episodeId) : undefined;
+  if (!episode) return { outcome: "IGNORED", reason: "no_episode", episode: null };
+  if ((episode.execution?.externalReference ?? null) !== paid.paymentLinkId) return { outcome: "IGNORED", reason: "link_mismatch", episode };
+  if (episode.status === "RECOVERED") return { outcome: "DUPLICATE", episode };
+  if (episode.status !== "PENDING" && episode.status !== "PROMISED" && episode.status !== "HELD_OUT") {
+    return { outcome: "IGNORED", reason: `terminal_${episode.status}`, episode };
+  }
+  return { outcome: "RECOVERED", episode: await observeOutcome(episode.id, "RECOVERED", recoveryStore, clock) };
 }
 
 async function markPending(episode: RecoveryEpisode, recoveryStore: RecoveryStore, source: string, clock: Clock) {

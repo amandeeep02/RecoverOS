@@ -54,6 +54,20 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
     refreshTimer.current = setTimeout(() => { void refresh(); }, 350);
   }, [refresh]);
 
+  // Selecting from a card at the top of the page changes a panel that lives beside
+  // the queue table, well below the fold. Without this the click "does nothing":
+  // the state changes off-screen. On the two-column layout the why-panel is sticky
+  // beside the table, so bringing the selected row into view brings the panel with it;
+  // on the single-column layout the panel sits under the whole table, so go to it.
+  const revealEpisode = useCallback((id: string) => {
+    setSelectedId(id);
+    requestAnimationFrame(() => {
+      const singleColumn = window.matchMedia("(max-width: 1100px)").matches;
+      const target = singleColumn ? document.getElementById("why-panel") : document.getElementById(`episode-${id}`);
+      target?.scrollIntoView({ behavior: "smooth", block: singleColumn ? "start" : "center" });
+    });
+  }, []);
+
   const connection = useRealtime(
     useCallback((event) => {
       if (event.type === "heartbeat") return;
@@ -66,9 +80,14 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
         setLastEventLabel(`Degradation closed on ${event.window.key.replace(/\|/g, " · ")} · ${event.window.released} queued for drain`);
       } else if (event.type === "degradation.drained") {
         setLastEventLabel(`Drained ${event.window.episodeId.slice(0, 12)}…`);
+      } else if (event.type === "customer.responded") {
+        // The phone answered. Bring the episode on screen so the transcript is seen
+        // arriving, not discovered later in a panel nobody scrolled to.
+        setLastEventLabel(`Customer said: “${event.text}”`);
+        revealEpisode(event.episode.id);
       }
       scheduleRefresh();
-    }, [scheduleRefresh]),
+    }, [scheduleRefresh, revealEpisode]),
     refresh,
   );
 
@@ -81,6 +100,10 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
     [episodes, snapshot.ledger.suppressedEpisodeIds],
   );
   const held = useMemo(() => episodes.filter((e) => e.status === "HELD_DEGRADED"), [episodes]);
+  // Newest episode whose link could still be paid. Lets the "customer pays" beat run
+  // straight after a page load, not only after a webhook fired in this tab.
+  const payable = useMemo(() => episodes.find((e) => e.status === "PENDING" && e.execution?.externalReference) ?? null, [episodes]);
+
 
   // The queue carries a projection of each episode, not the whole record. The voice
   // simulator needs the full episode, so it is fetched on demand rather than shipping
@@ -103,12 +126,19 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
           <span className={`live-pill live-${connection}`}>
             <i />{connection === "open" ? "LIVE" : connection === "connecting" ? "CONNECTING" : "OFFLINE"} · {liveEvents} events
           </span>
+          <a className="secondary-link" href="/checkout">Checkout demo →</a>
           <a className="secondary-link" href="/frontier">Frontier →</a>
           <a className="secondary-link" href="/replay">Replay console →</a>
         </div>
       </header>
 
       {lastEventLabel && <p className="last-event">{lastEventLabel}</p>}
+
+      {snapshot.quietHoursDisabled && (
+        <p className="gate-notice" role="status">
+          TRAI quiet-hours gate is <b>disabled on this server</b> (<code>RECOVEROS_DISABLE_QUIET_HOURS=1</code>). Calls and SMS are not time-gated here; the benchmark and tests still enforce 09:00–21:00 IST.
+        </p>
+      )}
 
       <DegradationBanner degradation={snapshot.degradation} />
 
@@ -120,8 +150,8 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
           judgement, the other is a rule; a merchant has to be able to tell them
           apart, so they never share a card. */}
       <section className="refusal-grid">
-        <ProtectedLedger ledger={snapshot.ledger} suppressed={suppressed} onSelect={setSelectedId} />
-        <RegulatoryRefusals refusals={snapshot.refusals} onSelect={setSelectedId} />
+        <ProtectedLedger ledger={snapshot.ledger} suppressed={suppressed} onSelect={revealEpisode} />
+        <RegulatoryRefusals refusals={snapshot.refusals} onSelect={revealEpisode} />
       </section>
 
       <section className="ledger-grid">
@@ -149,7 +179,7 @@ export function RecoveryDashboardV2({ initial }: { initial: DashboardSnapshot })
         </div>
       </section>
 
-      <DemoControls onFired={scheduleRefresh} />
+      <DemoControls onFired={scheduleRefresh} payableEpisodeId={payable?.id ?? null} />
 
       <KillSwitch degradation={snapshot.degradation} held={held} onChanged={scheduleRefresh} />
 

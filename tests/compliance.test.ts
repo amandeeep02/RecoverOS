@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkCompliance,
   checkEMandateDebit,
   checkSmsSend,
+  checkVoiceCall,
   checkWhatsAppSend,
   DEFAULT_COMPLIANCE_CONFIG,
   isWithinTelemarketingWindow,
   minimizeForAudit,
+  runtimeComplianceConfig,
   type ComplianceConfig,
 } from "@/lib/compliance";
 import { evaluatePolicy } from "@/lib/policy";
@@ -334,5 +336,28 @@ describe("regulatory gate composition in evaluatePolicy", () => {
   it("still applies quiet hours to an action that actually contacts the customer", () => {
     const decision = evaluatePolicy(baseInput("VOICE_CALL", at("2026-03-04T22:30:00.000Z")));
     expect(decision.outcome).not.toBe("APPROVE");
+  });
+});
+
+describe("RECOVEROS_DISABLE_QUIET_HOURS deployment switch", () => {
+  const lateNightIst = "2026-09-05T17:00:00.000Z"; // 22:30 IST
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("is off by default: the runtime config is the default config and 22:30 IST is refused", () => {
+    vi.stubEnv("RECOVEROS_DISABLE_QUIET_HOURS", "");
+    expect(runtimeComplianceConfig()).toBe(DEFAULT_COMPLIANCE_CONFIG);
+    const refused = checkVoiceCall({ nowIso: lateNightIst, consentValid: true, optedOut: false, config: runtimeComplianceConfig() });
+    expect(refused.violations.map((v) => v.code)).toContain("TRAI_QUIET_HOURS");
+  });
+
+  it("when on, widens only the telemarketing window for this process and leaves the default config untouched", () => {
+    vi.stubEnv("RECOVEROS_DISABLE_QUIET_HOURS", "1");
+    const config = runtimeComplianceConfig();
+    expect(config.telemarketing).toMatchObject({ allowedStartHour: 0, allowedEndHour: 24 });
+    expect(DEFAULT_COMPLIANCE_CONFIG.telemarketing).toMatchObject({ allowedStartHour: 9, allowedEndHour: 21 });
+    expect(config.dlt).toBe(DEFAULT_COMPLIANCE_CONFIG.dlt);
+    expect(checkVoiceCall({ nowIso: lateNightIst, consentValid: true, optedOut: false, config }).allowed).toBe(true);
+    // Consent is not a time-of-day matter; the switch does not touch it.
+    expect(checkVoiceCall({ nowIso: lateNightIst, consentValid: true, optedOut: true, config }).allowed).toBe(false);
   });
 });

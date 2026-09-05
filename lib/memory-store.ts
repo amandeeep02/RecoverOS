@@ -128,6 +128,13 @@ export class RecoveryStore {
     return (this.audits.get(episodeId) ?? []).map(copy);
   }
 
+  /** Every requested id is a key in the result, empty when the episode has no trail. */
+  async getAuditForEpisodes(episodeIds: ReadonlyArray<string>): Promise<Record<string, AuditEvent[]>> {
+    const audits: Record<string, AuditEvent[]> = {};
+    for (const id of episodeIds) audits[id] = (this.audits.get(id) ?? []).map(copy);
+    return audits;
+  }
+
   async getExecution(idempotencyKey: string) {
     const value = this.executions.get(idempotencyKey);
     return value ? copy(value) : undefined;

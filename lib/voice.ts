@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { RecoveryEpisode } from "@/lib/domain";
 import { RecoveryStore } from "@/lib/store";
 import { formatInr } from "@/lib/domain";
-import { checkVoiceCall, DEFAULT_COMPLIANCE_CONFIG, minimizeForAudit, type ComplianceConfig } from "@/lib/compliance";
+import { checkVoiceCall, minimizeForAudit, runtimeComplianceConfig, type ComplianceConfig } from "@/lib/compliance";
 
 export type VoiceProvider = "elevenlabs" | "browser" | "twilio";
 
@@ -28,6 +28,18 @@ export interface PromiseToPay {
 }
 
 const ELEVENLABS_API = "https://api.elevenlabs.io/v1";
+
+/** Audio Twilio fetches mid-call via `/api/voice/audio/:id`. Keyed by call id; lives
+ *  for the process, which is the lifetime of a demo call. */
+const globalAudio = globalThis as unknown as { recoverOsVoiceAudio?: Map<string, Buffer> };
+const voiceAudio = globalAudio.recoverOsVoiceAudio ?? (globalAudio.recoverOsVoiceAudio = new Map<string, Buffer>());
+export function getCachedVoiceAudio(id: string): Buffer | undefined {
+  return voiceAudio.get(id);
+}
+
+function escapeXml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 function getElevenLabsKey(): string | null {
   return process.env.ELEVENLABS_API_KEY ?? null;
@@ -94,7 +106,7 @@ export async function executeVoiceCall(
 ): Promise<VoiceCallResult> {
   const callId = `call_${randomUUID()}`;
   const nowIso = options.nowIso ?? new Date().toISOString();
-  const complianceConfig = options.complianceConfig ?? DEFAULT_COMPLIANCE_CONFIG;
+  const complianceConfig = options.complianceConfig ?? runtimeComplianceConfig();
 
   // TRAI TCCCPR quiet hours + DPDP consent/opt-out gate. Checked before any
   // script is generated or provider contacted, so a non-compliant call is
@@ -139,8 +151,30 @@ export async function executeVoiceCall(
     try {
       const auth = Buffer.from(`${twilio.accountSid}:${twilio.authToken}`).toString("base64");
       const publicBase = process.env.PUBLIC_BASE_URL?.replace(/\/$/, "");
-      const gather = publicBase ? `<Pause length="1"/><Gather input="speech" language="hi-IN" speechTimeout="auto" action="${publicBase}/api/voice/collect" method="POST"><Say voice="Polly.Aditi" language="hi-IN">Kripya bataiye, payment fail kyun hua tha? Aap Hindi ya English mein jawab de sakte hain.</Say></Gather><Say voice="Polly.Aditi" language="hi-IN">Dhanyavaad. Hum aapko WhatsApp par payment link bhejenge. Alvida.</Say>` : "";
-      const twiml = `<Response><Say voice="Polly.Aditi" language="hi-IN">${script}</Say>${gather}</Response>`;
+      const question = "Kripya bataiye, payment fail kyun hua tha? Aap Hindi ya English mein jawab de sakte hain.";
+      const say = (text: string) => `<Say voice="Polly.Aditi" language="hi-IN">${escapeXml(text)}</Say>`;
+      let scriptTwiml = say(script);
+      let questionTwiml = say(question);
+      // ElevenLabs on the call itself: Twilio has to fetch the audio over the public
+      // internet, so this needs both the key and a reachable base URL. Otherwise the
+      // call still happens, in Twilio's Hindi voice.
+      if (publicBase && getElevenLabsKey()) {
+        const [scriptAudio, questionAudio] = await Promise.all([generateElevenLabsAudio(script), generateElevenLabsAudio(question)]);
+        if (scriptAudio) {
+          voiceAudio.set(callId, Buffer.from(scriptAudio.audioBase64, "base64"));
+          scriptTwiml = `<Play>${publicBase}/api/voice/audio/${callId}</Play>`;
+        }
+        if (questionAudio) {
+          voiceAudio.set(`${callId}-q`, Buffer.from(questionAudio.audioBase64, "base64"));
+          questionTwiml = `<Play>${publicBase}/api/voice/audio/${callId}-q</Play>`;
+        }
+      }
+      // The spoken answer can only come back if Twilio can reach us. `actionOnEmptyResult`
+      // posts even silence, so the episode always records that the question was asked.
+      const gather = publicBase
+        ? `<Pause length="1"/><Gather input="speech" language="en-IN" speechTimeout="auto" actionOnEmptyResult="true" action="${publicBase}/api/voice/collect" method="POST">${questionTwiml}</Gather>${say("Dhanyavaad. Hum aapko WhatsApp par payment link bhejenge. Alvida.")}`
+        : "";
+      const twiml = `<Response>${scriptTwiml}${gather}</Response>`;
       const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilio.accountSid}/Calls.json`, {
         method: "POST",
         headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },

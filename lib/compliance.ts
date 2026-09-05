@@ -170,6 +170,23 @@ export interface ComplianceConfig {
  */
 export const DEFAULT_WHATSAPP_FOLLOWUP_TEMPLATE_ID = "payment_recovery_followup_v1";
 
+/**
+ * Deployment switch: RECOVEROS_DISABLE_QUIET_HOURS=1 widens the TRAI telemarketing
+ * window to the whole day for THIS process only. It exists so a demo can be recorded
+ * outside 09:00–21:00 IST. It is not a regulatory position: the benchmark and the
+ * tests never set it, DEFAULT_COMPLIANCE_CONFIG is untouched, and the dashboard shows
+ * a banner while it is on so nothing on screen claims a gate that is not armed.
+ */
+export function quietHoursDisabled(): boolean {
+  return process.env.RECOVEROS_DISABLE_QUIET_HOURS === "1";
+}
+
+/** The config this process actually enforces: the given base, minus quiet hours when the switch is on. */
+export function runtimeComplianceConfig(base: ComplianceConfig = DEFAULT_COMPLIANCE_CONFIG): ComplianceConfig {
+  if (!quietHoursDisabled()) return base;
+  return { ...base, telemarketing: { ...base.telemarketing, allowedStartHour: 0, allowedEndHour: 24 } };
+}
+
 /** A merchant with nothing registered yet: quiet hours enforced, nothing
  *  pre-approved, opt-in required everywhere. Every real merchant is expected
  *  to override `dlt.templates` / `whatsapp.templates` once they register. */

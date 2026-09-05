@@ -85,6 +85,38 @@ export function normalizeRazorpayEvent(body: unknown, headers: { eventId?: strin
   return parsed.data;
 }
 
+export interface PaymentLinkPaid {
+  eventId: string;
+  paymentLinkId: string;
+  /** Our episode id, carried back on the link's `notes` and `reference_id` (see lib/razorpay.ts). */
+  episodeId: string | null;
+  paymentId: string | null;
+  amountPaise: number;
+}
+
+/**
+ * The closing half of the loop. `lib/razorpay.ts` creates every link with
+ * `reference_id = episodeId` and `notes.recoveros_episode_id = episodeId`, so a
+ * `payment_link.paid` webhook names the episode it settles without a lookup.
+ * Returns null for any other event so the route can fall through to ingestion.
+ */
+export function extractPaymentLinkPaid(body: unknown, headers: { eventId?: string } = {}): PaymentLinkPaid | null {
+  const source = body as Record<string, any>;
+  if (source?.event !== "payment_link.paid") return null;
+  const link = source.payload?.payment_link?.entity ?? {};
+  const payment = source.payload?.payment?.entity ?? {};
+  if (typeof link.id !== "string" || link.id.length === 0) throw new Error("Malformed Razorpay webhook: payload.payment_link.entity.id");
+  const episodeId = link.notes?.recoveros_episode_id ?? link.reference_id ?? null;
+  const amount = [link.amount_paid, payment.amount, link.amount].map(Number).find((n) => Number.isFinite(n) && n > 0);
+  return {
+    eventId: headers.eventId ?? source.event_id ?? source.id ?? `evt_${link.id}_paid`,
+    paymentLinkId: link.id,
+    episodeId: typeof episodeId === "string" && episodeId.length > 0 ? episodeId : null,
+    paymentId: typeof payment.id === "string" ? payment.id : null,
+    amountPaise: amount ?? NaN,
+  };
+}
+
 function mapFailureSource(value: unknown): PaymentEvent["failureSource"] {
   const text = String(value).toLowerCase();
   if (text.includes("bank") || text.includes("issuer")) return "bank";

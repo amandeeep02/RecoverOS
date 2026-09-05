@@ -3,10 +3,10 @@ import { eirScoreSchema, type CustomerProfile, type MerchantPolicy, type Payment
 import { bestAction, calculateEir, rupees } from "@/lib/scoring";
 import { evaluatePolicy } from "@/lib/policy";
 import { diagnose } from "@/lib/diagnosis";
-import { processPaymentFailure, observeOutcome } from "@/lib/pipeline";
+import { processPaymentFailure, observeOutcome, observePaymentLinkPaid } from "@/lib/pipeline";
 import { transitionEpisode } from "@/lib/state-machine";
 import { RecoveryStore } from "@/lib/store";
-import { normalizeRazorpayEvent, verifyRazorpaySignature } from "@/lib/normalizer";
+import { extractPaymentLinkPaid, normalizeRazorpayEvent, verifyRazorpaySignature } from "@/lib/normalizer";
 import { PostgresRecoveryStore } from "@/lib/pg-store";
 
 const event: PaymentEvent = {
@@ -182,5 +182,48 @@ describe("contact fatigue in the churn term", () => {
     expect(protective.protectedPaise).toBe(nagged.protectedPaise);
     const displaced = protective.candidates.find((c) => c.action === "REMINDER" && c.churnCostPaise !== undefined);
     if (displaced) expect(displaced.churnCostPaise).toBe(2 * displaced.churnCostUnscaledPaise!);
+  });
+});
+
+describe("payment_link.paid closes the loop", () => {
+  const paidWebhook = (episodeId: string, linkId: string) => ({
+    event: "payment_link.paid",
+    payload: {
+      payment_link: { entity: { id: linkId, reference_id: episodeId.slice(0, 40), status: "paid", amount: event.amountPaise, amount_paid: event.amountPaise, notes: { recoveros_episode_id: episodeId } } },
+      payment: { entity: { id: "pay_settle_001", amount: event.amountPaise, status: "captured" } },
+    },
+  });
+
+  it("extracts the episode and link Razorpay hands back, and nothing from other events", () => {
+    expect(extractPaymentLinkPaid({ event: "payment.failed" })).toBeNull();
+    expect(extractPaymentLinkPaid(paidWebhook("ep_x", "plink_1"), { eventId: "evt_1" }))
+      .toMatchObject({ eventId: "evt_1", episodeId: "ep_x", paymentLinkId: "plink_1", paymentId: "pay_settle_001", amountPaise: event.amountPaise });
+  });
+
+  it("recovers only the episode that issued the link, once, and 200-ignores everything else", async () => {
+    const recoveryStore = new RecoveryStore();
+    await recoveryStore.saveProfile(profile);
+    const { episode } = await processPaymentFailure(event, recoveryStore, policy);
+    expect(episode.status).toBe("PENDING");
+    const linkId = episode.execution?.externalReference;
+    expect(linkId).toBeTruthy();
+
+    // A signed webhook naming our episode but a link we never issued is not evidence.
+    const forged = await observePaymentLinkPaid(extractPaymentLinkPaid(paidWebhook(episode.id, "plink_not_ours"))!, recoveryStore);
+    expect(forged).toMatchObject({ outcome: "IGNORED", reason: "link_mismatch" });
+    expect((await recoveryStore.getEpisode(episode.id))?.status).toBe("PENDING");
+
+    const settled = await observePaymentLinkPaid(extractPaymentLinkPaid(paidWebhook(episode.id, linkId!))!, recoveryStore);
+    expect(settled.outcome).toBe("RECOVERED");
+    expect(settled.episode?.status).toBe("RECOVERED");
+    expect(settled.episode?.outcome?.recoveredAmountPaise).toBe(event.amountPaise);
+    expect((await recoveryStore.getAudit(episode.id)).at(-1)?.stage).toBe("OUTCOME");
+
+    // Razorpay redelivers; the second delivery is a duplicate, not a second transition.
+    const redelivered = await observePaymentLinkPaid(extractPaymentLinkPaid(paidWebhook(episode.id, linkId!))!, recoveryStore);
+    expect(redelivered.outcome).toBe("DUPLICATE");
+
+    const unknown = await observePaymentLinkPaid(extractPaymentLinkPaid(paidWebhook("ep_missing", "plink_1"))!, recoveryStore);
+    expect(unknown).toMatchObject({ outcome: "IGNORED", reason: "no_episode" });
   });
 });

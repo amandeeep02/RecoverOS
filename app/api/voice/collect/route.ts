@@ -45,7 +45,12 @@ export async function POST(request: NextRequest) {
       stage: "CUSTOMER_RESPONSE",
       payload: { channel: "voice", text, confidence: response.confidence },
     });
-    realtimeServer.emit({ type: "episode.updated", episode: { id: updated.id, status: updated.status, customerId: updated.event.customerId, amountPaise: updated.event.amountPaise } });
+    realtimeServer.emit({
+      type: "customer.responded",
+      episode: { id: updated.id, status: updated.status, customerId: updated.event.customerId, amountPaise: updated.event.amountPaise },
+      text,
+      confidence: response.confidence,
+    });
     void sendWhatsAppFollowUp(updated, text);
   }
 

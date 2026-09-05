@@ -38,7 +38,7 @@ export function WhyPanel({ episode, audit }: { episode: EpisodeView; audit: Audi
   const eir = episode.eir;
 
   return (
-    <aside className="why-panel" aria-label="Decision details">
+    <aside id="why-panel" className="why-panel" aria-label="Decision details">
       <div className="why-header">
         <div>
           <p className="eyebrow">Why this decision</p>

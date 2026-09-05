@@ -18,6 +18,7 @@ export type StreamEvent =
   | { type: "degradation.opened"; window: StreamDegradationWindow }
   | { type: "degradation.closed"; window: { id: string; key: string; released: number; closedAtMs: number } }
   | { type: "degradation.drained"; window: { id: string; key: string; episodeId: string } }
+  | { type: "customer.responded"; episode: { id: string; status: string; customerId: string; amountPaise: number }; text: string; confidence: number | null }
   | { type: "heartbeat"; atMs: number };
 
 /**
